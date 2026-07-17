@@ -140,15 +140,21 @@ def fill_embeddings(df: pd.DataFrame, args, backbone, emb_cache,
                   "were NOT persisted this run.")
         return None, None
 
-    mut_c, wt_c, missing = emb_cache.get(vids)
-    mut = np.zeros((len(vids), D), np.float32)
+    # Determine misses cheaply from the sidecar (no bulk H5 read / NaN alloc) so
+    # progress is visible immediately and a mostly-cold cache doesn't stall on a
+    # giant eager allocation.
+    missing_set = set(emb_cache.missing_ids(vids))
+    missing = [i for i, v in enumerate(vids) if v in missing_set]
+    print(f"[emb] {len(vids)-len(missing)}/{len(vids)} cached, {len(missing)} to "
+          f"compute ({args.esm_model} {args.pooling}); resident {len(vids)}x{D}",
+          flush=True)
+    mut = np.zeros((len(vids), D), np.float32)  # lazy calloc, not eager NaN
     wt = np.zeros((len(vids), D), np.float32)
-    if mut_c.size:
-        found = [i for i in range(len(vids)) if i not in set(missing)]
-        mut[found] = mut_c[found]
-        wt[found] = wt_c[found]
-    print(f"[emb] {len(vids)-len(missing)}/{len(vids)} cached, "
-          f"{len(missing)} to compute ({args.esm_model} {args.pooling})")
+    if len(missing) < len(vids):                # read only the cached rows
+        cached_pos = [i for i, v in enumerate(vids) if v not in missing_set]
+        cmut, cwt, _ = emb_cache.get([vids[i] for i in cached_pos])
+        mut[cached_pos] = cmut
+        wt[cached_pos] = cwt
     if missing and not _compute_misses(df, args, backbone, emb_cache, missing,
                                        mut=mut, wt=wt):
         print("[emb] WARNING: cache locked by another writer; some embeddings "

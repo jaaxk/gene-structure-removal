@@ -63,7 +63,7 @@ GRAD_CLIP=1.0
 
 # --- embedding read mode ---
 DEVICE=auto                # auto | cuda | cpu (auto-detects the node)
-EMBEDDINGS_MODE=auto       # auto | ram | stream (auto picks by pool size)
+EMBEDDINGS_MODE=stream     # stream avoids a big resident alloc; robust for large sets
 MAX_RESIDENT_GB=32         # auto uses ram below this, else stream
 NUM_WORKERS=8              # streaming DataLoader workers
 PREFETCH_FACTOR=4          # batches prefetched per worker (streaming)

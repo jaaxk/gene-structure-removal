@@ -29,9 +29,12 @@ import numpy as np
 import pandas as pd
 
 # Canonical scalar columns for a variant row (WT rows use mutant="WT", pos=0).
+# `mutated_sequence` holds the variant sequence (for WT rows, the WT sequence) so
+# the LoRA live-embedding path can serve sequences without the original FASTA.
 SCORE_COLUMNS = [
     "gene_id", "variant_id", "mutant", "pos", "wt_aa", "mut_aa", "seq_len",
     "is_wt", "wt_score", "mut_score", "delta", "abs_delta", "label",
+    "mutated_sequence",
 ]
 
 
@@ -48,40 +51,39 @@ class VariantStore:
             d.mkdir(parents=True, exist_ok=True)
 
     def write_part(
-        self, shard: str, df: pd.DataFrame, embeddings: np.ndarray
+        self, shard: str, df: pd.DataFrame,
+        mut_embeddings: np.ndarray, wt_embeddings: np.ndarray,
     ) -> None:
-        """Write one shard's scores + embeddings + manifest atomically-ish.
+        """Write one shard's scores + (mut, wt) embeddings + manifest.
 
-        ``df`` must contain a ``variant_id`` column; ``embeddings[i]`` corresponds
-        to ``df.iloc[i]``. Row order defines the h5 layout.
+        ``df`` must contain a ``variant_id`` column; ``mut_embeddings[i]`` and
+        ``wt_embeddings[i]`` correspond to ``df.iloc[i]``. The WT embedding is the
+        wild-type pooled at the SAME mutated position, so WT-anchored losses
+        compare a variant to its own WT like-for-like.
         """
         assert "variant_id" in df.columns, "df must have a variant_id column"
-        assert len(df) == len(embeddings), (
-            f"scores/embeddings length mismatch: {len(df)} vs {len(embeddings)}"
-        )
-        embeddings = np.asarray(embeddings, dtype=np.float32)
-        assert embeddings.ndim == 2, "embeddings must be (N, D)"
+        mut = np.asarray(mut_embeddings, dtype=np.float32)
+        wt = np.asarray(wt_embeddings, dtype=np.float32)
+        assert len(df) == len(mut) == len(wt), (
+            f"length mismatch: df={len(df)} mut={len(mut)} wt={len(wt)}")
+        assert mut.ndim == 2 and mut.shape == wt.shape, "embeddings must be (N,D)"
         self._ensure()
 
-        # Scores parquet.
         df.to_parquet(self.scores_dir / f"{shard}.parquet", index=False)
 
-        # Embeddings h5.
         variant_ids = df["variant_id"].tolist()
+        chunks = (min(1024, len(mut)), mut.shape[1])
         with h5py.File(self.emb_dir / f"{shard}.h5", "w") as h5:
-            h5.create_dataset(
-                "X", data=embeddings, dtype="float32",
-                chunks=(min(1024, len(embeddings)), embeddings.shape[1]),
-                compression="gzip", compression_opts=4,
-            )
+            for name, arr in (("X_mut", mut), ("X_wt", wt)):
+                h5.create_dataset(name, data=arr, dtype="float32", chunks=chunks,
+                                  compression="gzip", compression_opts=4)
             dt = h5py.string_dtype(encoding="utf-8")
             h5.create_dataset("variant_id", data=np.array(variant_ids, dtype=object),
                               dtype=dt)
 
-        # Manifest part.
         manifest = {
             "shard": shard,
-            "embedding_dim": int(embeddings.shape[1]),
+            "embedding_dim": int(mut.shape[1]),
             "n": int(len(df)),
             "genes": sorted(df["gene_id"].unique().tolist()),
             "variant_ids": variant_ids,
@@ -121,15 +123,19 @@ class VariantStore:
                 index[vid] = (m["shard"], row)
         return index
 
-    def load_embeddings(self, variant_ids: List[str]) -> np.ndarray:
-        """Load embeddings for the given variant_ids, in the requested order."""
+    def load_embeddings(self, variant_ids: List[str], which: str = "mut") -> np.ndarray:
+        """Load embeddings for the given variant_ids, in the requested order.
+
+        ``which`` selects the mutant ('mut' -> dataset X_mut) or the position-
+        matched wild-type ('wt' -> X_wt) embedding.
+        """
+        dset = {"mut": "X_mut", "wt": "X_wt"}[which]
         index = self._build_index()
         missing = [v for v in variant_ids if v not in index]
         if missing:
             raise KeyError(
                 f"{len(missing)} variant_ids not in store (e.g. {missing[:3]})"
             )
-        # Group requested rows by shard for efficient slicing.
         by_shard: Dict[str, List[tuple]] = {}
         for out_i, vid in enumerate(variant_ids):
             shard, row = index[vid]
@@ -142,6 +148,6 @@ class VariantStore:
             rows = np.array([p[1] for p in pairs])
             order = np.argsort(rows)  # h5 fancy-indexing requires increasing order
             with h5py.File(self.emb_dir / f"{shard}.h5", "r") as h5:
-                data = h5["X"][rows[order]]
+                data = h5[dset][rows[order]]
             out[out_idx[order]] = data
         return out

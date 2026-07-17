@@ -9,8 +9,8 @@ BASE = ["--run_name", "t", "--dataset_name", "d"]
 def test_defaults_parse():
     a = parse_args(BASE)
     assert a.scorer == "masked_marginal"
-    assert a.pooling == "mean"
-    assert a.loss_type == "contrastive_ce"
+    assert a.pooling == "concat"
+    assert a.loss_type == "wt_anchored_bce"
     assert a.batch_mode == "gene_diverse"
 
 

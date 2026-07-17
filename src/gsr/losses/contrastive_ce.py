@@ -30,8 +30,9 @@ class ContrastiveCELoss(BaseLoss):
         self.beta = nn.Parameter(torch.tensor(0.0))
         self.bce = nn.BCEWithLogitsLoss()
 
-    def forward(self, z: torch.Tensor, y: torch.Tensor
+    def forward(self, z_mut: torch.Tensor, z_wt: torch.Tensor, y: torch.Tensor
                 ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        z = z_mut  # in-batch loss compares mutants to each other; z_wt unused
         sim = pairwise_similarity(z, self.distance_metric)          # (B,B)
         same_label = (y.unsqueeze(0) == y.unsqueeze(1)).float()     # (B,B)
         valid = (y != MIDDLE)

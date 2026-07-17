@@ -12,13 +12,13 @@
 # raw-backbone baseline; set it to a run's best.pt/final.pt to evaluate the
 # trained projection. Edit the variables below.
 # =====================================================================
-OUT_NAME=backbone_baseline
+OUT_NAME=backbone_baseline_concat
 CHECKPOINT=                 # e.g. /scratch/.../runs/<run>/best.pt ; empty = backbone
 EVALUATORS="centroid dimreduction regression"
 
 ESM_MODEL=esmc_600m
 EMBEDDING_LAYER=-1
-POOLING=mean                # must match the checkpoint's pooling if CHECKPOINT set
+POOLING=concat              # mean | mutated_position | concat
 SCORE_BATCH_SIZE=16
 
 DMS_SELECTION_TYPES="Activity Binding Expression Stability OrganismalFitness"

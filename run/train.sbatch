@@ -11,8 +11,9 @@
 # Train the projection head. Edit the variables below -- this is the
 # single place to change any training hyperparameter.
 # =====================================================================
-RUN_NAME=gsr_maskmarg_mean_ce
-DATASET_NAME=human_uniref90_maskmarg_mean   # must match a built store
+RUN_NAME=gsr_wtanchored_concat
+DATASET_NAME=uniref90_dev5000               # must match a built store
+POOLING=concat             # mean | mutated_position | concat (must match the store)
 
 # --- head ---
 HEAD_HIDDEN_DIMS="1024 512"
@@ -22,8 +23,16 @@ HEAD_ACTIVATION=gelu       # relu | gelu | silu | tanh
 HEAD_NORM=layernorm        # none | layernorm | batchnorm
 
 # --- loss ---
-LOSS_TYPE=contrastive_ce   # contrastive_ce | ntxent | triplet
+LOSS_TYPE=wt_anchored_bce  # wt_anchored_bce | contrastive_ce | ntxent | triplet
 DISTANCE_METRIC=cosine     # cosine | euclidean
+
+# --- LoRA (backbone finetuning; off by default) ---
+USE_LORA=""                # set to "--use_lora" to finetune the backbone
+ESM_MODEL=esmc_600m
+ESM_LR=1e-5
+LORA_RANK=8
+LORA_ALPHA=16
+LORA_DROPOUT=0.05
 
 # --- batching / diversity ---
 BATCH_MODE=gene_diverse    # gene_diverse | cross_gene
@@ -58,6 +67,8 @@ singularity exec --nv --overlay ${OVERLAY}:ro ${BASE} /bin/bash -c "
   PYTHONPATH=src python scripts/train.py \
     --run_name ${RUN_NAME} \
     --dataset_name ${DATASET_NAME} \
+    --pooling ${POOLING} \
+    --esm_model ${ESM_MODEL} \
     --head_hidden_dims ${HEAD_HIDDEN_DIMS} \
     --head_out_dim ${HEAD_OUT_DIM} \
     --head_dropout ${HEAD_DROPOUT} \
@@ -65,6 +76,11 @@ singularity exec --nv --overlay ${OVERLAY}:ro ${BASE} /bin/bash -c "
     --head_norm ${HEAD_NORM} \
     --loss_type ${LOSS_TYPE} \
     --distance_metric ${DISTANCE_METRIC} \
+    ${USE_LORA} \
+    --esm_lr ${ESM_LR} \
+    --lora_rank ${LORA_RANK} \
+    --lora_alpha ${LORA_ALPHA} \
+    --lora_dropout ${LORA_DROPOUT} \
     --batch_mode ${BATCH_MODE} \
     --batch_size ${BATCH_SIZE} \
     --genes_per_batch ${GENES_PER_BATCH} \

@@ -20,6 +20,8 @@ from typing import List, Optional
 import torch
 
 from gsr.args import AA_ALPHABET
+from gsr.backbone.pooling import output_dim as pool_output_dim
+from gsr.backbone.pooling import pool_batch
 
 # model alias -> (hf_repo, revision or None, hidden_dim, trust_remote_code)
 _MODEL_REGISTRY = {
@@ -119,7 +121,16 @@ class ESMBackbone:
         return logits, hidden
 
     # --- embeddings -----------------------------------------------------
-    @torch.no_grad()
+    def forward_reps(self, sequences: List[str], layer: int = -1):
+        """Per-residue hidden states + attention mask for a batch.
+
+        Runs with gradients when LoRA is enabled (live finetuning) and under
+        no_grad otherwise (frozen backbone). Token index == 1-indexed residue pos.
+        """
+        input_ids, attn = self._tokenize(sequences)
+        _, hidden = self._forward(input_ids, attn, need_hidden=True, layer=layer)
+        return hidden, attn
+
     def embed(
         self,
         sequences: List[str],
@@ -127,38 +138,15 @@ class ESMBackbone:
         pooling: str = "mean",
         positions: Optional[List[Optional[int]]] = None,
     ) -> torch.Tensor:
-        """Return pooled embeddings for a batch of sequences.
+        """Return pooled embeddings (B, out_dim) for a batch of sequences.
 
-        Args:
-            layer: hidden layer index (-1 = last).
-            pooling: 'mean' | 'mutated_position' | 'concat'.
-            positions: 1-indexed mutated residue positions (one per sequence);
-                ``None`` for a sequence (e.g. WT) means use the mean vector for the
-                positional component.
+        ``positions`` are 1-indexed mutated residue positions (one per sequence);
+        ``None`` uses the mean vector for the positional component. For a WT pooled
+        relative to a mutant, pass the mutant's position so both are pooled at the
+        same residue.
         """
-        input_ids, attn = self._tokenize(sequences)
-        _, hidden = self._forward(input_ids, attn, need_hidden=True, layer=layer)
-        mask = attn.unsqueeze(-1).to(hidden.dtype)          # (B,L,1)
-        mean_pool = (hidden * mask).sum(1) / mask.sum(1)    # (B,D)
-
-        if pooling == "mean":
-            return mean_pool
-
-        # positional component: embedding at token index == 1-indexed residue pos
-        B = hidden.shape[0]
-        pos_vec = mean_pool.clone()
-        if positions is None:
-            positions = [None] * B
-        for i, p in enumerate(positions):
-            if p is not None:
-                tok_idx = p  # BOS offset: residue p (1-indexed) -> token p
-                if tok_idx < hidden.shape[1]:
-                    pos_vec[i] = hidden[i, tok_idx]
-        if pooling == "mutated_position":
-            return pos_vec
-        if pooling == "concat":
-            return torch.cat([mean_pool, pos_vec], dim=-1)
-        raise ValueError(f"Unknown pooling {pooling!r}")
+        hidden, attn = self.forward_reps(sequences, layer=layer)
+        return pool_batch(hidden, attn, positions, pooling)
 
     def output_dim(self, pooling: str) -> int:
-        return self.hidden_dim * (2 if pooling == "concat" else 1)
+        return pool_output_dim(self.hidden_dim, pooling)

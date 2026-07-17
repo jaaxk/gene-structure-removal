@@ -21,8 +21,9 @@ class TripletLoss(BaseLoss):
         super().__init__()
         self.margin = margin
 
-    def forward(self, z: torch.Tensor, y: torch.Tensor
+    def forward(self, z_mut: torch.Tensor, z_wt: torch.Tensor, y: torch.Tensor
                 ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        z = z_mut  # in-batch loss; z_wt unused
         valid = y != MIDDLE
         if valid.sum() < 3:
             zero = z.sum() * 0.0

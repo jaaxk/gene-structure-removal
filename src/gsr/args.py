@@ -16,7 +16,7 @@ AA_ALPHABET = "ACDEFGHIKLMNPQRSTVWY"
 
 SCORER_CHOICES = ("masked_marginal", "wt_marginal", "pll")
 POOLING_CHOICES = ("mean", "mutated_position", "concat")
-LOSS_CHOICES = ("contrastive_ce", "ntxent", "triplet")
+LOSS_CHOICES = ("wt_anchored_bce", "contrastive_ce", "ntxent", "triplet")
 DISTANCE_CHOICES = ("cosine", "euclidean")
 BATCH_MODE_CHOICES = ("gene_diverse", "cross_gene")
 ACTIVATION_CHOICES = ("relu", "gelu", "silu", "tanh")
@@ -49,8 +49,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="ESM-C model id / HF repo, loaded via transformers.")
     g.add_argument("--embedding_layer", type=int, default=-1,
                    help="Hidden layer to take residue embeddings from (-1 = last).")
-    g.add_argument("--pooling", type=str, default="mean", choices=POOLING_CHOICES,
-                   help="How a variant sequence becomes one vector for the head.")
+    g.add_argument("--pooling", type=str, default="concat", choices=POOLING_CHOICES,
+                   help="How a variant sequence becomes one vector for the head. "
+                   "For mutated_position/concat the WT is pooled at the SAME "
+                   "mutated residue as the variant.")
     g.add_argument("--max_seq_len", type=int, default=1024,
                    help="Length cap on wild-type sequences (PLL cost is O(L)).")
 
@@ -98,8 +100,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     # --- Loss ---------------------------------------------------------------
     g = p.add_argument_group("loss")
-    g.add_argument("--loss_type", type=str, default="contrastive_ce",
-                   choices=LOSS_CHOICES)
+    g.add_argument("--loss_type", type=str, default="wt_anchored_bce",
+                   choices=LOSS_CHOICES,
+                   help="wt_anchored_bce: pull each variant toward/away from ITS "
+                   "WT by label. contrastive_ce: in-batch pairs between variants.")
     g.add_argument("--distance_metric", type=str, default="cosine",
                    choices=DISTANCE_CHOICES)
     g.add_argument("--use_learnable_scale", action="store_true", default=True,

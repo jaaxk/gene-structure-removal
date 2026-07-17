@@ -12,11 +12,11 @@
 # Build the score+embedding store for training. Edit the variables below;
 # this is the single place to change any dataset-build option.
 # =====================================================================
-DATASET_NAME=human_uniref90_maskmarg_mean   # store subdir
+DATASET_NAME=uniref90_dev5000    # store subdir
 FASTA_PATH=/scratch/jv2807/gene_structure_removal/data/human_uniref90.fasta
 ESM_MODEL=esmc_600m
 EMBEDDING_LAYER=-1
-POOLING=mean                 # mean | mutated_position | concat
+POOLING=concat              # mean | mutated_position | concat
 MAX_SEQ_LEN=1024
 SCORER=masked_marginal       # masked_marginal | wt_marginal | pll
 SCORE_BATCH_SIZE=16

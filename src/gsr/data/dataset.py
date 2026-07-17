@@ -23,40 +23,12 @@ from gsr.losses.base import LABEL_TO_ID, MIDDLE
 from gsr.scoring.store import VariantStore
 
 
-class VariantDataset(Dataset):
-    def __init__(self, store: VariantStore, drop_middle: bool = True,
-                 gene_ids: List[str] | None = None):
-        df = store.load_scores()
-        if gene_ids is not None:
-            df = df[df["gene_id"].isin(set(gene_ids))].copy()
-        df["label_id"] = df["label"].map(LABEL_TO_ID).astype(int)
-        if drop_middle:
-            df = df[df["label_id"] != MIDDLE].copy()
-        df = df.reset_index(drop=True)
-        if len(df) == 0:
-            raise ValueError("VariantDataset is empty after filtering.")
+class GroupableMixin:
+    """Grouping helpers used by the sampler; needs self.labels + self.gene_codes."""
 
-        self.df = df
-        self.embeddings = torch.from_numpy(
-            store.load_embeddings(df["variant_id"].tolist())
-        ).float()
-        self.labels = torch.tensor(df["label_id"].to_numpy(), dtype=torch.long)
-        self.gene_codes = torch.tensor(
-            pd.factorize(df["gene_id"])[0], dtype=torch.long
-        )
-        self.input_dim = self.embeddings.shape[1]
-
-    def __len__(self) -> int:
-        return len(self.df)
-
-    def __getitem__(self, idx: int):
-        return self.embeddings[idx], self.labels[idx], self.gene_codes[idx]
-
-    # --- grouping helpers used by the sampler ---------------------------
     def gene_to_indices(self) -> dict:
         out: dict = {}
-        genes = self.gene_codes.numpy()
-        for i, g in enumerate(genes):
+        for i, g in enumerate(self.gene_codes.numpy()):
             out.setdefault(int(g), []).append(i)
         return out
 
@@ -65,6 +37,42 @@ class VariantDataset(Dataset):
         out: dict = {}
         genes = self.gene_codes.numpy()
         labels = self.labels.numpy()
-        for i in range(len(self)):
-            out.setdefault(int(genes[i]), {}).setdefault(int(labels[i]), []).append(i)
+        for i in range(len(self.labels)):
+            out.setdefault(int(genes[i]), {}).setdefault(
+                int(labels[i]), []).append(i)
         return out
+
+
+class VariantDataset(Dataset, GroupableMixin):
+    def __init__(self, store: VariantStore, drop_middle: bool = True,
+                 gene_ids: List[str] | None = None):
+        df = store.load_scores()
+        if gene_ids is not None:
+            df = df[df["gene_id"].isin(set(gene_ids))].copy()
+        df = df[~df["is_wt"]].copy()  # WT anchoring uses the per-variant wt embedding
+        df["label_id"] = df["label"].map(LABEL_TO_ID).astype(int)
+        if drop_middle:
+            df = df[df["label_id"] != MIDDLE].copy()
+        df = df.reset_index(drop=True)
+        if len(df) == 0:
+            raise ValueError("VariantDataset is empty after filtering.")
+
+        self.df = df
+        vids = df["variant_id"].tolist()
+        self.mut_emb = torch.from_numpy(store.load_embeddings(vids, "mut")).float()
+        self.wt_emb = torch.from_numpy(store.load_embeddings(vids, "wt")).float()
+        assert self.mut_emb.shape == self.wt_emb.shape, (
+            f"mut/wt embedding shape mismatch: {tuple(self.mut_emb.shape)} vs "
+            f"{tuple(self.wt_emb.shape)}")
+        self.labels = torch.tensor(df["label_id"].to_numpy(), dtype=torch.long)
+        self.gene_codes = torch.tensor(
+            pd.factorize(df["gene_id"])[0], dtype=torch.long
+        )
+        self.input_dim = self.mut_emb.shape[1]
+
+    def __len__(self) -> int:
+        return len(self.df)
+
+    def __getitem__(self, idx: int):
+        return (self.mut_emb[idx], self.wt_emb[idx],
+                self.labels[idx], self.gene_codes[idx])

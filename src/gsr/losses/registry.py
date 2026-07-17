@@ -6,9 +6,13 @@ from gsr.losses.base import BaseLoss
 from gsr.losses.contrastive_ce import ContrastiveCELoss
 from gsr.losses.ntxent import NTXentLoss
 from gsr.losses.triplet import TripletLoss
+from gsr.losses.wt_anchored_bce import WTAnchoredBCELoss
 
 
 def build_loss(args) -> BaseLoss:
+    if args.loss_type == "wt_anchored_bce":
+        return WTAnchoredBCELoss(distance_metric=args.distance_metric,
+                                 use_learnable_scale=args.use_learnable_scale)
     if args.loss_type == "contrastive_ce":
         return ContrastiveCELoss(distance_metric=args.distance_metric,
                                  use_learnable_scale=args.use_learnable_scale)

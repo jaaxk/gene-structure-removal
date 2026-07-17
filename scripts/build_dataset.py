@@ -24,6 +24,7 @@ from tqdm import tqdm
 from gsr import paths
 from gsr.args import POOLING_CHOICES, SCORER_CHOICES
 from gsr.backbone.esm import ESMBackbone
+from gsr.backbone.pooling import pool_batch
 from gsr.data.labeling import assign_labels
 from gsr.data.mutagenesis import sample_variants
 from gsr.data.uniref import load_wildtypes
@@ -41,7 +42,7 @@ def build_parser():
     p.add_argument("--fasta_path", default=str(paths.DATA_DIR / "human_uniref90.fasta"))
     p.add_argument("--esm_model", default="esmc_600m")
     p.add_argument("--embedding_layer", type=int, default=-1)
-    p.add_argument("--pooling", default="mean", choices=POOLING_CHOICES)
+    p.add_argument("--pooling", default="concat", choices=POOLING_CHOICES)
     p.add_argument("--max_seq_len", type=int, default=1024)
     p.add_argument("--scorer", default="masked_marginal", choices=SCORER_CHOICES)
     p.add_argument("--score_batch_size", type=int, default=8)
@@ -59,28 +60,49 @@ def build_parser():
 
 
 def _gene_rows(gene_id, wt_seq, variants, scores, pooling, backbone, emb_layer, bs):
-    """Assemble score rows + row-aligned embeddings for one gene (WT + variants)."""
+    """Assemble score rows + row-aligned (mut, wt) embeddings for one gene.
+
+    mut embedding = the row's own sequence pooled at its mutated position.
+    wt  embedding = the WILD-TYPE sequence pooled at the SAME position (one WT
+    forward, pooled per position), so a variant is compared to its own WT
+    like-for-like at the mutated residue.
+    """
     rows = [dict(gene_id=gene_id, variant_id=seq_hash(wt_seq), mutant="WT",
                  pos=0, wt_aa="", mut_aa="", seq_len=len(wt_seq), is_wt=True,
-                 wt_score=0.0, mut_score=0.0, delta=0.0, abs_delta=0.0)]
+                 wt_score=0.0, mut_score=0.0, delta=0.0, abs_delta=0.0,
+                 mutated_sequence=wt_seq)]
     seqs = [wt_seq]
-    positions = [None]  # WT positional-pooling component falls back to mean
+    positions = [None]  # WT row's positional component falls back to mean
 
     for v, (ws, ms, delta) in zip(variants, scores):
         rows.append(dict(gene_id=gene_id, variant_id=seq_hash(v.sequence),
                          mutant=v.mutant, pos=v.pos, wt_aa=v.wt_aa, mut_aa=v.mut_aa,
                          seq_len=len(v.sequence), is_wt=False,
                          wt_score=ws, mut_score=ms, delta=delta,
-                         abs_delta=abs(delta)))
+                         abs_delta=abs(delta), mutated_sequence=v.sequence))
         seqs.append(v.sequence)
         positions.append(v.pos)
 
-    embs = []
+    # mut embeddings: each row's own sequence at its position (batched).
+    mut_embs = []
     for start in range(0, len(seqs), bs):
         e = backbone.embed(seqs[start:start + bs], layer=emb_layer, pooling=pooling,
                            positions=positions[start:start + bs])
-        embs.append(e.float().cpu().numpy())
-    return pd.DataFrame(rows), np.concatenate(embs, axis=0)
+        mut_embs.append(e.float().cpu().numpy())
+    mut_emb = np.concatenate(mut_embs, axis=0)
+
+    # wt embeddings: one WT forward, pooled at each row's position.
+    wt_hidden, wt_attn = backbone.forward_reps([wt_seq], layer=emb_layer)
+    wt_embs = []
+    for start in range(0, len(positions), bs):
+        ps = positions[start:start + bs]
+        n = len(ps)
+        h = wt_hidden.expand(n, *wt_hidden.shape[1:])
+        a = wt_attn.expand(n, *wt_attn.shape[1:])
+        e = pool_batch(h, a, ps, pooling)
+        wt_embs.append(e.float().cpu().numpy())
+    wt_emb = np.concatenate(wt_embs, axis=0)
+    return pd.DataFrame(rows), mut_emb, wt_emb
 
 
 def main():
@@ -102,7 +124,7 @@ def main():
           f"{backbone.output_dim(args.pooling)}")
 
     rng = np.random.default_rng(args.seed + args.shard_id)
-    gene_frames, gene_embs = [], []
+    gene_frames, mut_list, wt_list = [], [], []
     for rec in tqdm(shard_records, desc=f"shard {args.shard_id}"):
         variants = sample_variants(rec.gene_id, rec.sequence,
                                    n=args.variants_per_gene, rng=rng)
@@ -110,37 +132,40 @@ def main():
             continue
         scores = score_gene(backbone, rec.sequence, variants,
                             scorer=args.scorer, batch_size=args.score_batch_size)
-        df, emb = _gene_rows(rec.gene_id, rec.sequence, variants, scores,
-                             args.pooling, backbone, args.embedding_layer,
-                             args.score_batch_size)
+        df, mut_emb, wt_emb = _gene_rows(
+            rec.gene_id, rec.sequence, variants, scores, args.pooling,
+            backbone, args.embedding_layer, args.score_batch_size)
         gene_frames.append(df)
-        gene_embs.append(emb)
+        mut_list.append(mut_emb)
+        wt_list.append(wt_emb)
 
     if not gene_frames:
         print("[build] no genes produced; nothing to write.")
         return
 
-    # Concatenate with a positional index that stays aligned with `embeddings`.
+    # Concatenate with a positional index that stays aligned with embeddings.
     df = pd.concat(gene_frames, ignore_index=True)
-    embeddings = np.concatenate(gene_embs, axis=0)
-    assert len(df) == len(embeddings)
+    mut_emb = np.concatenate(mut_list, axis=0)
+    wt_emb = np.concatenate(wt_list, axis=0)
+    assert len(df) == len(mut_emb) == len(wt_emb)
 
     # assign_labels preserves row index and may drop whole genes; use the
-    # surviving index to filter the embedding matrix in lockstep.
+    # surviving index to filter the embedding matrices in lockstep.
     labeled = assign_labels(df, quartile_low=args.quartile_low,
                             quartile_high=args.quartile_high,
                             min_variants=args.min_variants_per_gene)
     keep_idx = labeled.index.to_numpy()
-    embeddings = embeddings[keep_idx]
+    mut_emb = mut_emb[keep_idx]
+    wt_emb = wt_emb[keep_idx]
     labeled = labeled.reset_index(drop=True)
 
     print_dataset_stats(labeled, title=f"build shard {args.shard_id}")
 
     store = VariantStore(paths.SCRATCH_ROOT / "store" / args.dataset_name)
     shard_name = f"shard_{args.shard_id:04d}"
-    store.write_part(shard_name, labeled, embeddings)
+    store.write_part(shard_name, labeled, mut_emb, wt_emb)
     print(f"[build] wrote {shard_name}: {len(labeled)} rows, "
-          f"emb {embeddings.shape} -> {store.base}")
+          f"mut/wt emb {mut_emb.shape} -> {store.base}")
 
 
 if __name__ == "__main__":

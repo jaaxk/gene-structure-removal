@@ -18,42 +18,46 @@ def _make_part(gene, n, dim, seed):
         "wt_score": 0.0, "mut_score": rng.normal(size=n),
         "delta": rng.normal(size=n), "abs_delta": rng.random(n),
         "label": rng.choice(["same", "different", "middle"], size=n),
+        "mutated_sequence": ["A" * 100 for _ in range(n)],
     })
-    emb = rng.normal(size=(n, dim)).astype(np.float32)
-    return df, emb, vids, emb
+    mut = rng.normal(size=(n, dim)).astype(np.float32)
+    wt = rng.normal(size=(n, dim)).astype(np.float32)
+    return df, mut, wt, vids
 
 
 def test_roundtrip_scores_and_embeddings(tmp_path):
     store = VariantStore(tmp_path / "ds")
     dim = 8
-    df1, emb1, vids1, _ = _make_part("geneA", 5, dim, 0)
-    df2, emb2, vids2, _ = _make_part("geneB", 7, dim, 1)
-    store.write_part("shard_0000", df1, emb1)
-    store.write_part("shard_0001", df2, emb2)
+    df1, mut1, wt1, vids1 = _make_part("geneA", 5, dim, 0)
+    df2, mut2, wt2, vids2 = _make_part("geneB", 7, dim, 1)
+    store.write_part("shard_0000", df1, mut1, wt1)
+    store.write_part("shard_0001", df2, mut2, wt2)
 
     scores = store.load_scores()
     assert len(scores) == 12
     assert set(scores["gene_id"]) == {"geneA", "geneB"}
     assert store.embedding_dim() == dim
 
-    # Request in a shuffled, cross-shard order and verify exact rows come back.
+    # Request in a shuffled, cross-shard order and verify exact rows for mut & wt.
     order = [vids2[3], vids1[0], vids1[4], vids2[0]]
-    want = np.stack([emb2[3], emb1[0], emb1[4], emb2[0]])
-    got = store.load_embeddings(order)
-    assert got.shape == (4, dim)
-    np.testing.assert_allclose(got, want, rtol=0, atol=1e-6)
+    want_mut = np.stack([mut2[3], mut1[0], mut1[4], mut2[0]])
+    want_wt = np.stack([wt2[3], wt1[0], wt1[4], wt2[0]])
+    got_mut = store.load_embeddings(order, "mut")
+    got_wt = store.load_embeddings(order, "wt")
+    np.testing.assert_allclose(got_mut, want_mut, rtol=0, atol=1e-6)
+    np.testing.assert_allclose(got_wt, want_wt, rtol=0, atol=1e-6)
 
 
 def test_missing_variant_raises(tmp_path):
     store = VariantStore(tmp_path / "ds")
-    df, emb, vids, _ = _make_part("geneA", 3, 4, 0)
-    store.write_part("shard_0000", df, emb)
+    df, mut, wt, vids = _make_part("geneA", 3, 4, 0)
+    store.write_part("shard_0000", df, mut, wt)
     with pytest.raises(KeyError):
         store.load_embeddings(["does_not_exist"])
 
 
 def test_length_mismatch_rejected(tmp_path):
     store = VariantStore(tmp_path / "ds")
-    df, emb, vids, _ = _make_part("geneA", 3, 4, 0)
+    df, mut, wt, vids = _make_part("geneA", 3, 4, 0)
     with pytest.raises(AssertionError):
-        store.write_part("shard_0000", df, emb[:2])
+        store.write_part("shard_0000", df, mut[:2], wt[:2])

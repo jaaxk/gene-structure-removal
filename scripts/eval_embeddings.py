@@ -34,7 +34,7 @@ def build_parser():
     # backbone / embedding config (must match the checkpoint's if given)
     p.add_argument("--esm_model", default="esmc_600m")
     p.add_argument("--embedding_layer", type=int, default=-1)
-    p.add_argument("--pooling", default="mean", choices=POOLING_CHOICES)
+    p.add_argument("--pooling", default="concat", choices=POOLING_CHOICES)
     p.add_argument("--score_batch_size", type=int, default=16)
     # DMS data
     p.add_argument("--dms_selection_types", nargs="+",

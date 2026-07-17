@@ -85,9 +85,20 @@ def fill_embeddings(df: pd.DataFrame, args, backbone, emb_cache
 
     if missing:
         bs = getattr(args, "score_batch_size", 16)
+        flush_every = 4096  # persist incrementally so long fills are resumable
         mseqs = df["mutated_sequence"].tolist()
         wseqs = df["wt_seq"].tolist()
         pos = df["pos"].astype(int).tolist()
+        pending, any_unsaved = [], False
+
+        def _flush(rows):
+            nonlocal any_unsaved
+            if not rows:
+                return
+            ok = emb_cache.put([vids[i] for i in rows],
+                               mut[rows], wt[rows])
+            any_unsaved = any_unsaved or (not ok)
+
         for s in tqdm(range(0, len(missing), bs), desc="embed misses"):
             idx = missing[s:s + bs]
             p = [pos[i] for i in idx]
@@ -98,9 +109,12 @@ def fill_embeddings(df: pd.DataFrame, args, backbone, emb_cache
             for k, i in enumerate(idx):
                 mut[i] = m[k]
                 wt[i] = w[k]
-        saved = emb_cache.put([vids[i] for i in missing],
-                              mut[missing], wt[missing])
-        if not saved:
-            print("[emb] WARNING: cache locked by another writer; computed "
-                  "embeddings NOT persisted this run.")
+            pending.extend(idx)
+            if len(pending) >= flush_every:
+                _flush(pending)
+                pending = []
+        _flush(pending)
+        if any_unsaved:
+            print("[emb] WARNING: cache locked by another writer for some flushes; "
+                  "those embeddings were NOT persisted this run (kept in memory).")
     return torch.from_numpy(mut), torch.from_numpy(wt)

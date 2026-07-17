@@ -145,7 +145,14 @@ def build_parser() -> argparse.ArgumentParser:
                    choices=DISTANCE_CHOICES,
                    help="Distance metric for centroid scoring.")
     g.add_argument("--held_out_gene_frac", type=float, default=0.2,
-                   help="Fraction of genes held out for centroid/eval (gene-level).")
+                   help="Per selection type, fraction of genes used as scored "
+                   "queries; centroids are built from the remaining genes.")
+    g.add_argument("--dms_selection_types", type=str, nargs="+",
+                   default=["Activity", "Binding", "Expression", "Stability",
+                            "OrganismalFitness"],
+                   help="DMS selection types to evaluate (CSV file stems).")
+    g.add_argument("--dms_max_per_assay", type=int, default=200,
+                   help="Cap variants sampled per DMS assay (bounds embedding cost).")
 
     return p
 

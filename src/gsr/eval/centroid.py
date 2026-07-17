@@ -1,0 +1,113 @@
+"""Zero-shot, selection-type-specific centroid evaluation.
+
+For each selection type we split its genes into a centroid set and a query set
+(gene-level, leakage-safe). From the centroid genes we build a top-quartile
+('high') and bottom-quartile ('low') centroid in the *projected* embedding space
+(quartiles are per-assay, so different DMS scales are handled). Each query variant
+is then scored two ways and correlated (Spearman) with its true DMS score:
+
+  * centroid difference: sim(v, high) - sim(v, low)
+  * axis projection    : v . (high - low) / |high - low|
+
+The primary metric is the mean per-type Spearman of the centroid-difference score.
+The same object runs during training (project_fn = current head) and standalone
+(project_fn = identity for the raw backbone, or a loaded head).
+"""
+
+from __future__ import annotations
+
+from typing import Callable, Dict
+
+import numpy as np
+
+from gsr.data.dms import gene_level_split
+from gsr.eval.dms_cache import build_or_load_dms_cache
+from gsr.utils.spearman import spearman
+
+
+def _cosine(a, B):
+    a = a / (np.linalg.norm(a) + 1e-8)
+    Bn = B / (np.linalg.norm(B, axis=1, keepdims=True) + 1e-8)
+    return Bn @ a
+
+
+def _neg_euclidean(a, B):
+    return -np.linalg.norm(B - a[None, :], axis=1)
+
+
+class CentroidDMSEvaluator:
+    primary_metric = "centroid/spearman_mean"
+
+    def __init__(self, args, embeddings: np.ndarray, meta):
+        self.metric = args.eval_distance
+        self.subsample = args.centroid_subsample
+        self.embeddings = embeddings
+        self.meta = meta.reset_index(drop=True)
+        self.rng = np.random.default_rng(args.seed)
+        self._prepare(args)
+
+    @classmethod
+    def from_args(cls, args, backbone=None):
+        emb, meta = build_or_load_dms_cache(args, backbone=backbone)
+        return cls(args, emb, meta)
+
+    def _prepare(self, args):
+        """Precompute per-type centroid-high/low and query row indices."""
+        m = self.meta
+        # Per-assay quartile membership (scale-free across assays).
+        m["_hi"] = False
+        m["_lo"] = False
+        for _dms, g in m.groupby("dms_id"):
+            hi = g["DMS_score"] >= g["DMS_score"].quantile(0.75)
+            lo = g["DMS_score"] <= g["DMS_score"].quantile(0.25)
+            m.loc[g.index[hi], "_hi"] = True
+            m.loc[g.index[lo], "_lo"] = True
+
+        self.types = {}
+        for stype, g in m.groupby("selection_type"):
+            genes = g["uniprot_id"].tolist()
+            centroid_genes, query_genes = gene_level_split(
+                genes, query_frac=args.held_out_gene_frac, seed=args.seed)
+            in_centroid = g["uniprot_id"].isin(centroid_genes)
+            in_query = g["uniprot_id"].isin(query_genes)
+            hi_idx = g.index[in_centroid & g["_hi"]].to_numpy()
+            lo_idx = g.index[in_centroid & g["_lo"]].to_numpy()
+            q_idx = g.index[in_query].to_numpy()
+            if self.subsample and len(hi_idx) > self.subsample:
+                hi_idx = self.rng.choice(hi_idx, self.subsample, replace=False)
+            if self.subsample and len(lo_idx) > self.subsample:
+                lo_idx = self.rng.choice(lo_idx, self.subsample, replace=False)
+            if len(hi_idx) == 0 or len(lo_idx) == 0 or len(q_idx) < 3:
+                print(f"[centroid] skipping {stype}: hi={len(hi_idx)} "
+                      f"lo={len(lo_idx)} query={len(q_idx)}")
+                continue
+            self.types[stype] = dict(hi=hi_idx, lo=lo_idx, q=q_idx,
+                                     dms=m.loc[q_idx, "DMS_score"].to_numpy())
+
+    def evaluate(self, project_fn: Callable[[np.ndarray], np.ndarray]) -> Dict[str, float]:
+        Z = project_fn(self.embeddings)
+        sim = _cosine if self.metric == "cosine" else _neg_euclidean
+        out: Dict[str, float] = {}
+        diffs, axes = [], []
+        for stype, t in self.types.items():
+            high_c = Z[t["hi"]].mean(0)
+            low_c = Z[t["lo"]].mean(0)
+            Zq = Z[t["q"]]
+            score_diff = sim(high_c, Zq) - sim(low_c, Zq)
+            axis = high_c - low_c
+            axis = axis / (np.linalg.norm(axis) + 1e-8)
+            score_axis = Zq @ axis
+            rho_diff = spearman(score_diff, t["dms"])
+            rho_axis = spearman(score_axis, t["dms"])
+            out[f"centroid/spearman_diff/{stype}"] = rho_diff
+            out[f"centroid/spearman_axis/{stype}"] = rho_axis
+            # Signed: high centroid is built from the high-DMS quartile, so a
+            # positive Spearman is the success direction; a negative value is a
+            # real failure and must not be hidden by abs().
+            if rho_diff == rho_diff:
+                diffs.append(rho_diff)
+            if rho_axis == rho_axis:
+                axes.append(rho_axis)
+        out["centroid/spearman_mean"] = float(np.mean(diffs)) if diffs else float("nan")
+        out["centroid/spearman_axis_mean"] = float(np.mean(axes)) if axes else float("nan")
+        return out

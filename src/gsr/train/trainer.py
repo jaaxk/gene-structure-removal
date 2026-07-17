@@ -43,15 +43,11 @@ class Trainer:
         self.use_lora = args.use_lora
         self.device = args.device if torch.cuda.is_available() else "cpu"
 
-        # Backbone only needed for the LoRA live path.
+        # LoRA live path embeds through this (finetuned) backbone each step; the
+        # frozen path holds resident embeddings and needs no backbone in the loop.
         self.backbone = backbone
-        if self.use_lora and self.backbone is None:
-            from gsr.backbone.esm import ESMBackbone
-            self.backbone = ESMBackbone(
-                args.esm_model, device=self.device, use_lora=True,
-                lora_cfg=dict(rank=args.lora_rank, alpha=args.lora_alpha,
-                              dropout=args.lora_dropout,
-                              target_modules=args.lora_target_modules))
+        if self.use_lora:
+            assert self.backbone is not None, "LoRA trainer requires a backbone"
             input_dim = self.backbone.output_dim(args.pooling)
         else:
             input_dim = dataset.input_dim
@@ -80,6 +76,20 @@ class Trainer:
         collate = collate_sequences if self.use_lora else None
         self.loader = DataLoader(dataset, batch_sampler=self.sampler,
                                  num_workers=0, collate_fn=collate)
+
+        # Eval cadence: derive from eval_per_epoch unless an explicit override.
+        steps_per_epoch = max(1, len(self.sampler))
+        if args.eval_every_steps > 0:
+            self.eval_cadence = args.eval_every_steps
+        elif args.eval_per_epoch > 0:
+            per_epoch = args.eval_per_epoch
+            if self.use_lora:
+                per_epoch = min(per_epoch, 2)  # re-embedding DMS is costly
+            self.eval_cadence = max(1, steps_per_epoch // per_epoch)
+        else:
+            self.eval_cadence = 0
+        print(f"[train] steps/epoch={steps_per_epoch} eval every "
+              f"{self.eval_cadence} steps")
 
         self.run_dir = paths.run_dir(args.run_name)
         paths.ensure_dirs(self.run_dir)
@@ -187,11 +197,43 @@ class Trainer:
                 self.wandb.log({f"train/{k}": v for k, v in metrics.items()},
                                step=self.global_step)
 
-                if args.eval_every_steps and \
-                        self.global_step % args.eval_every_steps == 0:
+                if self.eval_cadence and \
+                        self.global_step % self.eval_cadence == 0:
                     self._run_eval(tag=f"step{self.global_step}")
 
         self._run_eval(tag="final")
         self._save_checkpoint("final.pt")
+        self._final_full_eval()
         print(f"[train] done. checkpoints in {self.run_dir}")
         self.wandb.finish()
+
+    def _final_full_eval(self) -> None:
+        """Evaluate the BEST checkpoint on FULL (non-subsampled) centroids."""
+        if self.evaluator is None:
+            return
+        best_path = self.run_dir / "best.pt"
+        head = self.head
+        if best_path.exists():
+            ckpt = torch.load(best_path, map_location=self.device)
+            head = ProjectionHead(
+                input_dim=ckpt["input_dim"],
+                hidden_dims=self.args.head_hidden_dims,
+                out_dim=self.args.head_out_dim, dropout=self.args.head_dropout,
+                activation=self.args.head_activation, norm=self.args.head_norm)
+            head.load_state_dict(ckpt["head_state"])
+            head.eval().to(self.device)
+
+        def project(emb):
+            with torch.no_grad():
+                x = torch.from_numpy(np.asarray(emb, dtype=np.float32)).to(self.device)
+                return head(x).cpu().numpy()
+
+        self.evaluator.reprepare(0)  # full centroids
+        metrics = self.evaluator.evaluate(project)
+        self.wandb.log({f"final_full/{k}": v for k, v in metrics.items()},
+                       step=self.global_step)
+        print(f"[eval:final_full] best-ckpt macro Spearman="
+              f"{metrics.get(self.evaluator.primary_metric, float('nan')):.4f}")
+        import json
+        with open(self.run_dir / "final_full_metrics.json", "w") as fh:
+            json.dump(metrics, fh, indent=2)

@@ -3,17 +3,34 @@
 #SBATCH --account=torch_pr_800_cds
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=48G
-#SBATCH --time=12:00:00
+#SBATCH --mem=64G
+#SBATCH --time=24:00:00
 #SBATCH --output=logs/%x_%j.out
 
 # =====================================================================
-# Train the projection head. Edit the variables below -- this is the
-# single place to change any training hyperparameter.
+# Train the projection head (lazy hybrid flow: scores + embeddings are
+# cached content-addressed and reused across runs; no separate build step).
+# Edit the variables below -- the single place to change any hyperparameter.
 # =====================================================================
 RUN_NAME=gsr_wtanchored_concat
-DATASET_NAME=uniref90_dev5000               # must match a built store
-POOLING=concat             # mean | mutated_position | concat (must match the store)
+
+# --- data / wild-types ---
+FASTA_PATH=/scratch/jv2807/gene_structure_removal/data/human_uniref90.fasta
+LIMIT_GENES=5000            # 0 = all length-capped genes
+MAX_SEQ_LEN=400
+
+# --- backbone / pooling ---
+ESM_MODEL=esmc_600m
+EMBEDDING_LAYER=-1
+POOLING=concat             # mean | mutated_position | concat
+
+# --- labels (frozen-ESM likelihood) ---
+SCORER=masked_marginal     # masked_marginal | wt_marginal | pll
+SCORE_BATCH_SIZE=16
+VARIANTS_PER_GENE=150      # variants embedded + trained on per gene
+MIN_VARIANTS_PER_GENE=10
+QUARTILE_LOW=0.25
+QUARTILE_HIGH=0.25
 
 # --- head ---
 HEAD_HIDDEN_DIMS="1024 512"
@@ -28,7 +45,6 @@ DISTANCE_METRIC=cosine     # cosine | euclidean
 
 # --- LoRA (backbone finetuning; off by default) ---
 USE_LORA=""                # set to "--use_lora" to finetune the backbone
-ESM_MODEL=esmc_600m
 ESM_LR=1e-5
 LORA_RANK=8
 LORA_ALPHA=16
@@ -46,8 +62,8 @@ EPOCHS=20
 GRAD_CLIP=1.0
 
 # --- eval ---
-EVAL_EVERY_STEPS=500       # 0 = disable during-training eval
-CENTROID_SUBSAMPLE=2000
+EVAL_PER_EPOCH=8           # centroid evals per epoch (0 disables)
+CENTROID_SUBSAMPLE=2000    # held-out variants/type for during-training centroids
 EVAL_DISTANCE=cosine
 HELD_OUT_GENE_FRAC=0.2
 
@@ -66,9 +82,18 @@ singularity exec --nv --overlay ${OVERLAY}:ro ${BASE} /bin/bash -c "
   cd ${REPO}
   PYTHONPATH=src python scripts/train.py \
     --run_name ${RUN_NAME} \
-    --dataset_name ${DATASET_NAME} \
-    --pooling ${POOLING} \
+    --fasta_path ${FASTA_PATH} \
+    --limit_genes ${LIMIT_GENES} \
+    --max_seq_len ${MAX_SEQ_LEN} \
     --esm_model ${ESM_MODEL} \
+    --embedding_layer ${EMBEDDING_LAYER} \
+    --pooling ${POOLING} \
+    --scorer ${SCORER} \
+    --score_batch_size ${SCORE_BATCH_SIZE} \
+    --variants_per_gene ${VARIANTS_PER_GENE} \
+    --min_variants_per_gene ${MIN_VARIANTS_PER_GENE} \
+    --quartile_low ${QUARTILE_LOW} \
+    --quartile_high ${QUARTILE_HIGH} \
     --head_hidden_dims ${HEAD_HIDDEN_DIMS} \
     --head_out_dim ${HEAD_OUT_DIM} \
     --head_dropout ${HEAD_DROPOUT} \
@@ -88,7 +113,7 @@ singularity exec --nv --overlay ${OVERLAY}:ro ${BASE} /bin/bash -c "
     --weight_decay ${WEIGHT_DECAY} \
     --epochs ${EPOCHS} \
     --grad_clip ${GRAD_CLIP} \
-    --eval_every_steps ${EVAL_EVERY_STEPS} \
+    --eval_per_epoch ${EVAL_PER_EPOCH} \
     --centroid_subsample ${CENTROID_SUBSAMPLE} \
     --eval_distance ${EVAL_DISTANCE} \
     --held_out_gene_frac ${HELD_OUT_GENE_FRAC} \

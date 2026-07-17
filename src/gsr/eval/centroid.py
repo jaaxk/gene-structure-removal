@@ -41,17 +41,25 @@ class CentroidDMSEvaluator:
     def __init__(self, args, embeddings: np.ndarray, meta):
         self.metric = args.eval_distance
         self.subsample = args.centroid_subsample
+        self.held_out_gene_frac = args.held_out_gene_frac
+        self.seed = args.seed
         self.embeddings = embeddings
         self.meta = meta.reset_index(drop=True)
         self.rng = np.random.default_rng(args.seed)
-        self._prepare(args)
+        self._prepare()
 
     @classmethod
     def from_args(cls, args, backbone=None):
         emb, meta = build_or_load_dms_cache(args, backbone=backbone)
         return cls(args, emb, meta)
 
-    def _prepare(self, args):
+    def reprepare(self, subsample: int) -> None:
+        """Rebuild centroid/query indices with a different centroid subsample
+        (e.g. 0 = use all variants, for the final full-centroid eval)."""
+        self.subsample = subsample
+        self._prepare()
+
+    def _prepare(self):
         """Precompute per-type centroid-high/low and query row indices."""
         m = self.meta
         # Per-assay quartile membership (scale-free across assays).
@@ -67,7 +75,7 @@ class CentroidDMSEvaluator:
         for stype, g in m.groupby("selection_type"):
             genes = g["uniprot_id"].tolist()
             centroid_genes, query_genes = gene_level_split(
-                genes, query_frac=args.held_out_gene_frac, seed=args.seed)
+                genes, query_frac=self.held_out_gene_frac, seed=self.seed)
             in_centroid = g["uniprot_id"].isin(centroid_genes)
             in_query = g["uniprot_id"].isin(query_genes)
             hi_idx = g.index[in_centroid & g["_hi"]].to_numpy()

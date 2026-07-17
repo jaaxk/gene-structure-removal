@@ -1,26 +1,19 @@
-"""Dataset over a built VariantStore (frozen-embedding training path).
+"""In-memory datasets for training.
 
-Loads per-variant scalars (parquet) and their precomputed embeddings (h5) into
-memory. Middle-labeled variants are dropped from training (they carry no
-contrastive signal); WT rows are kept as 'same' anchors. Each item is
-``(embedding, label_id, gene_code)``.
+Both datasets are built from a metadata DataFrame (columns include gene_id and
+label_id, one row per training variant, WT rows and middle-labeled rows already
+removed). Embeddings are held RESIDENT (loaded/computed once, never read from disk
+per batch) so the training loop does no I/O and the GPU is not starved.
 
-When LoRA finetuning is added, a sequence-serving variant of this dataset will
-replace the cached embeddings; the interface (label_id + gene_code per item)
-stays the same so the sampler/trainer are unaffected.
+- VariantDataset: frozen path -- serves precomputed (mut, wt) embedding tensors.
+- (LoRA path uses SequenceVariantDataset in seq_dataset.py.)
 """
 
 from __future__ import annotations
 
-from typing import List
-
-import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
-
-from gsr.losses.base import LABEL_TO_ID, MIDDLE
-from gsr.scoring.store import VariantStore
 
 
 class GroupableMixin:
@@ -44,30 +37,18 @@ class GroupableMixin:
 
 
 class VariantDataset(Dataset, GroupableMixin):
-    def __init__(self, store: VariantStore, drop_middle: bool = True,
-                 gene_ids: List[str] | None = None):
-        df = store.load_scores()
-        if gene_ids is not None:
-            df = df[df["gene_id"].isin(set(gene_ids))].copy()
-        df = df[~df["is_wt"]].copy()  # WT anchoring uses the per-variant wt embedding
-        df["label_id"] = df["label"].map(LABEL_TO_ID).astype(int)
-        if drop_middle:
-            df = df[df["label_id"] != MIDDLE].copy()
-        df = df.reset_index(drop=True)
-        if len(df) == 0:
-            raise ValueError("VariantDataset is empty after filtering.")
-
-        self.df = df
-        vids = df["variant_id"].tolist()
-        self.mut_emb = torch.from_numpy(store.load_embeddings(vids, "mut")).float()
-        self.wt_emb = torch.from_numpy(store.load_embeddings(vids, "wt")).float()
-        assert self.mut_emb.shape == self.wt_emb.shape, (
-            f"mut/wt embedding shape mismatch: {tuple(self.mut_emb.shape)} vs "
-            f"{tuple(self.wt_emb.shape)}")
-        self.labels = torch.tensor(df["label_id"].to_numpy(), dtype=torch.long)
+    def __init__(self, df: pd.DataFrame, mut_emb: torch.Tensor,
+                 wt_emb: torch.Tensor):
+        assert len(df) == len(mut_emb) == len(wt_emb)
+        assert mut_emb.shape == wt_emb.shape, (
+            f"mut/wt embedding shape mismatch: {tuple(mut_emb.shape)} vs "
+            f"{tuple(wt_emb.shape)}")
+        self.df = df.reset_index(drop=True)
+        self.mut_emb = mut_emb.float()
+        self.wt_emb = wt_emb.float()
+        self.labels = torch.tensor(self.df["label_id"].to_numpy(), dtype=torch.long)
         self.gene_codes = torch.tensor(
-            pd.factorize(df["gene_id"])[0], dtype=torch.long
-        )
+            pd.factorize(self.df["gene_id"])[0], dtype=torch.long)
         self.input_dim = self.mut_emb.shape[1]
 
     def __len__(self) -> int:

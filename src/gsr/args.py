@@ -35,8 +35,12 @@ def build_parser() -> argparse.ArgumentParser:
     g = p.add_argument_group("run")
     g.add_argument("--run_name", type=str, required=True,
                    help="Unique name; outputs go to <scratch>/runs/<run_name>/.")
-    g.add_argument("--dataset_name", type=str, required=True,
-                   help="Store subdir under <scratch>/store/ built by build_dataset.py.")
+    g.add_argument("--fasta_path", type=str,
+                   default="/scratch/jv2807/gene_structure_removal/data/"
+                           "human_uniref90.fasta",
+                   help="Wild-type sequences (human UniRef90 by default).")
+    g.add_argument("--limit_genes", type=int, default=0,
+                   help="Cap number of genes (after length filter). 0 = all.")
     g.add_argument("--seed", type=int, default=0)
     g.add_argument("--wandb_project", type=str, default="gene-structure-removal")
     g.add_argument("--wandb_mode", type=str, default="online",
@@ -140,8 +144,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     # --- Evaluation ---------------------------------------------------------
     g = p.add_argument_group("eval")
-    g.add_argument("--eval_every_steps", type=int, default=500,
-                   help="Run during-training centroid eval every N steps (0=off).")
+    g.add_argument("--eval_per_epoch", type=int, default=8,
+                   help="Centroid evals per epoch (derives the step cadence). "
+                   "LoRA runs auto-throttle to <=2/epoch (re-embedding DMS is "
+                   "costly). 0 disables during-training eval.")
+    g.add_argument("--eval_every_steps", type=int, default=0,
+                   help="Explicit eval cadence override; 0 = derive from "
+                   "eval_per_epoch.")
     g.add_argument("--centroid_subsample", type=int, default=2000,
                    help="Max held-out variants per selection type used to build "
                    "centroids during training (keeps eval steps fast). 0 = all.")

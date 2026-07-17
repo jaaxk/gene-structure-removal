@@ -3,7 +3,7 @@ import pytest
 from gsr.args import parse_args
 
 
-BASE = ["--run_name", "t", "--dataset_name", "d"]
+BASE = ["--run_name", "t"]
 
 
 def test_defaults_parse():

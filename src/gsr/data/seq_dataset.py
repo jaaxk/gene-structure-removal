@@ -1,50 +1,29 @@
-"""Sequence-serving dataset for the LoRA live-embedding training path.
+"""Sequence-serving dataset for the LoRA live-embedding path.
 
-When the backbone is LoRA-finetuned, embeddings cannot be precomputed (the
-backbone changes during training), so the dataset serves the mutant sequence, its
-wild-type sequence, and the mutated position; the trainer embeds them on the fly
-through the LoRA backbone each step. Labels/positions come from the same built
-store as the frozen path (WT sequences are recovered from the stored is_wt rows).
+Built from the same training metadata DataFrame as the frozen path (columns:
+mutated_sequence, wt_seq, pos, gene_id, label_id). The trainer embeds mut + WT (at
+the mutated position) on the fly through the LoRA backbone each step, since a
+finetuned backbone's embeddings cannot be cached.
 """
 
 from __future__ import annotations
-
-from typing import List
 
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
 from gsr.data.dataset import GroupableMixin
-from gsr.losses.base import LABEL_TO_ID, MIDDLE
-from gsr.scoring.store import VariantStore
 
 
 class SequenceVariantDataset(Dataset, GroupableMixin):
-    def __init__(self, store: VariantStore, drop_middle: bool = True,
-                 gene_ids: List[str] | None = None):
-        df = store.load_scores()
-        if gene_ids is not None:
-            df = df[df["gene_id"].isin(set(gene_ids))].copy()
-        # WT sequence per gene from the stored is_wt rows.
-        wt_rows = df[df["is_wt"]]
-        self.gene_to_wt = dict(zip(wt_rows["gene_id"], wt_rows["mutated_sequence"]))
-
-        df = df[~df["is_wt"]].copy()
-        df["label_id"] = df["label"].map(LABEL_TO_ID).astype(int)
-        if drop_middle:
-            df = df[df["label_id"] != MIDDLE].copy()
-        df = df.reset_index(drop=True)
-        if len(df) == 0:
-            raise ValueError("SequenceVariantDataset is empty after filtering.")
-
-        self.df = df
-        self.mut_seqs = df["mutated_sequence"].tolist()
-        self.wt_seqs = [self.gene_to_wt[g] for g in df["gene_id"]]
-        self.positions = df["pos"].astype(int).tolist()
-        self.labels = torch.tensor(df["label_id"].to_numpy(), dtype=torch.long)
+    def __init__(self, df: pd.DataFrame):
+        self.df = df.reset_index(drop=True)
+        self.mut_seqs = self.df["mutated_sequence"].tolist()
+        self.wt_seqs = self.df["wt_seq"].tolist()
+        self.positions = self.df["pos"].astype(int).tolist()
+        self.labels = torch.tensor(self.df["label_id"].to_numpy(), dtype=torch.long)
         self.gene_codes = torch.tensor(
-            pd.factorize(df["gene_id"])[0], dtype=torch.long)
+            pd.factorize(self.df["gene_id"])[0], dtype=torch.long)
 
     def __len__(self) -> int:
         return len(self.df)

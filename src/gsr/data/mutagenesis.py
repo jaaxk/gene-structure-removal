@@ -31,6 +31,26 @@ def _canonical_sites(sequence: str) -> List[int]:
     return [i for i, c in enumerate(sequence) if c in canonical]
 
 
+def enumerate_variants(gene_id: str, sequence: str) -> List[Variant]:
+    """All single-aa substitutions at canonical sites (19 per site).
+
+    Used for scoring: masked/wt-marginal produce the log-likelihood for every
+    variant in one sweep per gene, so scoring the full set is as cheap as a
+    subset and yields run-independent quartile thresholds.
+    """
+    variants: List[Variant] = []
+    for site in _canonical_sites(sequence):
+        wt_aa = sequence[site]
+        for alt in AA_ALPHABET:
+            if alt == wt_aa:
+                continue
+            variants.append(Variant(
+                gene_id=gene_id, mutant=f"{wt_aa}{site + 1}{alt}", pos=site + 1,
+                wt_aa=wt_aa, mut_aa=alt,
+                sequence=sequence[:site] + alt + sequence[site + 1:]))
+    return variants
+
+
 def sample_variants(
     gene_id: str,
     sequence: str,

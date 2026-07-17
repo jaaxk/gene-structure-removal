@@ -87,25 +87,52 @@ to `/scratch/jv2807/gene_structure_removal/`:
 
 Everything runs inside the shared Singularity overlay via SLURM — **never on the
 login node**. Each step has a `run/*.sbatch` script whose top-of-file variables
-are the only thing you edit.
+are the only thing you edit (the single place to change any hyperparameter).
 
 ```bash
-# 1. Build the training dataset (score + embed sampled variants)
+# 1. Build the training dataset (score + embed sampled variants -> store/<name>)
 sbatch run/build_dataset.sbatch
 
-# 2. Train the projection head
+# 2. Train the projection head on that store
 sbatch run/train.sbatch
 
-# 3. Evaluate any embeddings (backbone vs projected, or another model)
+# 3. Evaluate any embeddings — leave CHECKPOINT empty for the raw-backbone
+#    baseline, or point it at a run's best.pt to evaluate the projection.
 sbatch run/eval_embeddings.sbatch
 ```
 
 Interactive one-offs use `srun` inside the overlay — see `run/srun_interactive.md`.
+Every run prints dataset stats up front as a sanity check.
+
+## Key options
+
+All configuration is argparse (`src/gsr/args.py`), surfaced as editable variables
+in the `run/*.sbatch` scripts. The knobs most likely to matter:
+
+| Option | Meaning | Default |
+|--------|---------|---------|
+| `--esm_model` | backbone (`esmc_600m`/`esmc_300m`/`esm2_650m`) | `esmc_600m` |
+| `--pooling` | `mean` / `mutated_position` / `concat` | `mean` |
+| `--scorer` | label source: `masked_marginal`/`wt_marginal`/`pll` | `masked_marginal` |
+| `--variants_per_gene` | variants sampled + embedded per gene | 200 |
+| `--loss_type` | `contrastive_ce` / `ntxent` / `triplet` | `contrastive_ce` |
+| `--distance_metric` | `cosine` / `euclidean` | `cosine` |
+| `--batch_mode` | `gene_diverse` (one gene/batch) / `cross_gene` | `gene_diverse` |
+| `--use_lora` | LoRA-finetune the backbone | off |
+| `--eval_every_steps` | during-training centroid eval cadence | 500 |
+| `--centroid_subsample` | held-out variants/type for centroids at eval time | 2000 |
 
 ## Status
 
-Under active development. Build order (see the plan in `.claude/plans/`):
-Phase 0 skeleton → Phase 1 data/store → Phase 2 scoring/labels → Phase 3
-head/loss/trainer → Phase 4 evaluators → Phase 5 LoRA/scale/hardening.
+Functional end-to-end. Build order (see the plan in `.claude/plans/`): Phase 0
+skeleton → Phase 1 data/store → Phase 2 scoring/labels → Phase 3 head/loss/trainer
+→ Phase 4 evaluators → Phase 5 LoRA/scale/hardening. Phases 0–4 are implemented,
+unit-tested, and validated on real data (95,627 human UniRef90 sequences; a
+300-gene dev store; DMS centroid + regression + dim-reduction baselines).
+
+**Note on pooling:** mean pooling washes out single-residue signal (one changed
+residue in a ~200-long average), so raw-backbone zero-shot scores are weak — this
+is the gene-structure problem the projection is meant to fix. `concat` pooling
+(mean + mutated-position) is expected to carry much more per-variant signal.
 
 This README is updated whenever a feature is added or changed.

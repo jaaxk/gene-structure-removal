@@ -40,7 +40,7 @@ if [ -n "${CHECKPOINT}" ]; then CKPT_ARG="--checkpoint ${CHECKPOINT}"; fi
 
 singularity exec --nv --overlay ${OVERLAY}:ro ${BASE} /bin/bash -c "
   source /ext3/env.sh
-  export HDF5_USE_FILE_LOCKING=FALSE
+  export HDF5_USE_FILE_LOCKING=FALSE PYTHONUNBUFFERED=1
   cd ${REPO}
   PYTHONPATH=src python scripts/eval_embeddings.py \
     --out_name ${OUT_NAME} ${CKPT_ARG} \

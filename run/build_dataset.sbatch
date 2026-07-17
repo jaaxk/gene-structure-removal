@@ -34,7 +34,7 @@ REPO=/home/jv2807/gene_structure
 
 singularity exec --nv --overlay ${OVERLAY}:ro ${BASE} /bin/bash -c "
   source /ext3/env.sh
-  export HDF5_USE_FILE_LOCKING=FALSE
+  export HDF5_USE_FILE_LOCKING=FALSE PYTHONUNBUFFERED=1
   cd ${REPO}
   PYTHONPATH=src python scripts/build_dataset.py \
     --dataset_name ${DATASET_NAME} \

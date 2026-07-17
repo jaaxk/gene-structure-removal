@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gsr"
+version = "0.0.1"
+description = "ESM Gene Structure Removal: projection head that removes per-gene structure from ESM embeddings via a self-supervised contrastive objective labeled by frozen-ESM LL/PLL."
+requires-python = ">=3.9"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

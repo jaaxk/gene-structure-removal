@@ -1,0 +1,37 @@
+# Never commit heavy artifacts -- /home has a 30K inode / 50GB limit.
+# All data/outputs live under /scratch/jv2807/gene_structure_removal.
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# SLURM logs (job stdout/stderr merged into logs/%j.out)
+logs/
+*.out
+slurm-*.out
+
+# Data / model artifacts (should be in scratch anyway; block them here too)
+*.h5
+*.hdf5
+*.parquet
+*.pt
+*.ckpt
+*.npy
+*.npz
+*.fasta
+*.fa
+*.fasta.gz
+*.jsonl
+
+# Experiment tracking / local caches
+wandb/
+.cache/
+
+# Throwaway one-off scripts (e.g. the UniRef downloader) are not tracked
+scripts/download_uniref.py

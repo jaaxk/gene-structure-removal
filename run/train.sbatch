@@ -61,6 +61,13 @@ WEIGHT_DECAY=0.0
 EPOCHS=20
 GRAD_CLIP=1.0
 
+# --- embedding read mode ---
+DEVICE=auto                # auto | cuda | cpu (auto-detects the node)
+EMBEDDINGS_MODE=auto       # auto | ram | stream (auto picks by pool size)
+MAX_RESIDENT_GB=32         # auto uses ram below this, else stream
+NUM_WORKERS=8              # streaming DataLoader workers
+PREFETCH_FACTOR=4          # batches prefetched per worker (streaming)
+
 # --- eval ---
 EVAL_PER_EPOCH=8           # centroid evals per epoch (0 disables)
 CENTROID_SUBSAMPLE=2000    # held-out variants/type for during-training centroids
@@ -82,6 +89,11 @@ singularity exec --nv --overlay ${OVERLAY}:ro ${BASE} /bin/bash -c "
   cd ${REPO}
   PYTHONPATH=src python scripts/train.py \
     --run_name ${RUN_NAME} \
+    --device ${DEVICE} \
+    --embeddings_mode ${EMBEDDINGS_MODE} \
+    --max_resident_gb ${MAX_RESIDENT_GB} \
+    --num_workers ${NUM_WORKERS} \
+    --prefetch_factor ${PREFETCH_FACTOR} \
     --fasta_path ${FASTA_PATH} \
     --limit_genes ${LIMIT_GENES} \
     --max_seq_len ${MAX_SEQ_LEN} \

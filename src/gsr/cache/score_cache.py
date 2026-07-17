@@ -34,6 +34,10 @@ class ScoreCache:
         # gene ids can contain characters that are awkward in filenames; hash them.
         return self.dir / f"{seq_hash(gene_id)[:16]}.parquet"
 
+    def missing_genes(self, gene_ids) -> list:
+        """Genes without a cached score file (used to guard CPU runs)."""
+        return [g for g in gene_ids if not self._path(g).exists()]
+
     def get_or_compute(self, gene_id: str, wt_seq: str, backbone,
                        score_batch_size: int = 16,
                        candidate_cap: int = 0, seed: int = 0) -> pd.DataFrame:

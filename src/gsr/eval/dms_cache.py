@@ -26,6 +26,13 @@ def _cache_key(args) -> str:
             f"_max{args.dms_max_per_assay}_{types}")
 
 
+def dms_cache_exists(args) -> bool:
+    """Whether the DMS eval embedding cache for this config is already built."""
+    cache_dir = paths.EVAL_DIR / "dms_cache" / _cache_key(args)
+    return (cache_dir / "meta.parquet").exists() and \
+        (cache_dir / "embeddings.h5").exists()
+
+
 def build_or_load_dms_cache(args, backbone=None):
     """Return (embeddings (N,D) float32, meta DataFrame). Builds + caches if absent."""
     key = _cache_key(args)

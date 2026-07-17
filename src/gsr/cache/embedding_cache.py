@@ -44,6 +44,25 @@ class EmbeddingCache:
                 return json.load(fh)
         return {}
 
+    def missing_ids(self, variant_ids: List[str]) -> List[str]:
+        """Variant ids not yet in the cache (from the sidecar; no H5 read)."""
+        index = self._load_index()
+        return [v for v in variant_ids if v not in index]
+
+    def row_index(self, variant_ids: List[str]):
+        """Row numbers for variant_ids, or None if any is missing (streaming)."""
+        index = self._load_index()
+        rows = []
+        for v in variant_ids:
+            if v not in index:
+                return None
+            rows.append(index[v])
+        return rows
+
+    def open_readonly(self):
+        """Open the cache H5 read-only (used by streaming DataLoader workers)."""
+        return h5py.File(self.h5_path, "r")
+
     # --- read -----------------------------------------------------------
     def get(self, variant_ids: List[str]) -> Tuple[np.ndarray, np.ndarray, List[int]]:
         """Bulk-read mut+wt embeddings; missing rows are NaN.

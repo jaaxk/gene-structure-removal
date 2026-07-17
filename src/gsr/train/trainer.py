@@ -30,8 +30,10 @@ from tqdm import tqdm
 from gsr import paths
 from gsr.data.sampler import GeneBatchSampler
 from gsr.data.seq_dataset import collate_sequences
+from gsr.data.stream_dataset import StreamingVariantDataset, stream_worker_init
 from gsr.losses.registry import build_loss
 from gsr.models.projection_head import ProjectionHead
+from gsr.utils.device import resolve_device
 from gsr.utils.wandb_logger import WandbLogger
 
 
@@ -41,7 +43,7 @@ class Trainer:
         self.dataset = dataset
         self.evaluator = evaluator
         self.use_lora = args.use_lora
-        self.device = args.device if torch.cuda.is_available() else "cpu"
+        self.device = resolve_device(args.device)
 
         # LoRA live path embeds through this (finetuned) backbone each step; the
         # frozen path holds resident embeddings and needs no backbone in the loop.
@@ -73,9 +75,18 @@ class Trainer:
             dataset, batch_size=args.batch_size, batch_mode=args.batch_mode,
             genes_per_batch=args.genes_per_batch,
             balance_labels=args.balance_labels, seed=args.seed)
-        collate = collate_sequences if self.use_lora else None
-        self.loader = DataLoader(dataset, batch_sampler=self.sampler,
-                                 num_workers=0, collate_fn=collate)
+        if isinstance(dataset, StreamingVariantDataset):
+            # Worker-prefetch streaming: reads overlap compute, bounded memory.
+            self.loader = DataLoader(
+                dataset, batch_sampler=self.sampler,
+                num_workers=max(1, args.num_workers),
+                prefetch_factor=args.prefetch_factor,
+                pin_memory=(self.device == "cuda"),
+                worker_init_fn=stream_worker_init, persistent_workers=True)
+        else:
+            collate = collate_sequences if self.use_lora else None
+            self.loader = DataLoader(dataset, batch_sampler=self.sampler,
+                                     num_workers=0, collate_fn=collate)
 
         # Eval cadence: derive from eval_per_epoch unless an explicit override.
         steps_per_epoch = max(1, len(self.sampler))

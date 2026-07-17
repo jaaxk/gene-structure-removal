@@ -45,7 +45,12 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--wandb_project", type=str, default="gene-structure-removal")
     g.add_argument("--wandb_mode", type=str, default="online",
                    choices=("online", "offline", "disabled"))
-    g.add_argument("--device", type=str, default="cuda")
+    g.add_argument("--device", type=str, default="auto",
+                   choices=("auto", "cuda", "cpu"),
+                   help="auto = cuda if a GPU is visible else cpu.")
+    g.add_argument("--warm_only", action="store_true",
+                   help="Fill the score + embedding + DMS caches, then exit "
+                   "(a dedicated GPU pre-fill; training self-warms otherwise).")
 
     # --- Backbone (ESM) -----------------------------------------------------
     g = p.add_argument_group("backbone")
@@ -77,6 +82,19 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Frozen-ESM likelihood used to label variants.")
     g.add_argument("--score_batch_size", type=int, default=8,
                    help="Sequences per forward batch during scoring/embedding.")
+
+    # --- embedding read mode (frozen path) ----------------------------------
+    g = p.add_argument_group("embeddings_io")
+    g.add_argument("--embeddings_mode", type=str, default="auto",
+                   choices=("auto", "ram", "stream"),
+                   help="How training reads cached embeddings: ram (bulk-load "
+                   "resident) / stream (worker-prefetch from H5) / auto (by size).")
+    g.add_argument("--max_resident_gb", type=float, default=32.0,
+                   help="auto mode uses ram below this pool size, else stream.")
+    g.add_argument("--num_workers", type=int, default=8,
+                   help="DataLoader workers for streaming reads.")
+    g.add_argument("--prefetch_factor", type=int, default=4,
+                   help="Batches prefetched per worker (streaming).")
 
     # --- Mutagenesis / dataset build ---------------------------------------
     g = p.add_argument_group("data_build")

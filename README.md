@@ -102,13 +102,27 @@ are the only thing you edit (the single place to change any hyperparameter).
 ```bash
 # 1. Train the projection head directly from the UniRef FASTA. Scores and
 #    embeddings are computed lazily and CACHED on first use (content-addressed),
-#    then reused by later runs — there is no separate build step.
+#    then reused by later runs — there is no separate build step. On a GPU node
+#    this self-warms the caches then trains.
 sbatch run/train.sbatch
+
+# (optional) Pre-fill all caches on GPU without training — useful before running
+# cheap CPU head-training / hyperparameter sweeps on a large set.
+sbatch run/warm_cache.sbatch
 
 # 2. Evaluate any embeddings — leave CHECKPOINT empty for the raw-backbone
 #    baseline, or point it at a run's best.pt to evaluate the projection.
 sbatch run/eval_embeddings.sbatch
 ```
+
+**Device is auto-detected** (`--device auto`): a GPU node trains + self-warms the
+cache; once embeddings are cached you can run cheap head-training / HP sweeps by
+submitting the *same* job to a **CPU node** (no GPU → not subject to the low-util
+canceller). A CPU run with un-warmed caches errors and tells you to warm on GPU
+first. LoRA runs stay on GPU. **Embedding reads auto-select** `ram` (bulk-load
+resident, small sets) vs `stream` (worker-prefetch from H5, bounded memory) by
+`--max_resident_gb`, so training scales to arbitrarily large sets without holding
+everything in RAM and without per-batch I/O stalls.
 
 Interactive one-offs use `srun` inside the overlay — see `run/srun_interactive.md`.
 Every run prints dataset stats up front as a sanity check.
@@ -137,6 +151,8 @@ in the `run/*.sbatch` scripts. The knobs most likely to matter:
 | `--loss_type` | `wt_anchored_bce` / `contrastive_ce` / `ntxent` / `triplet` | `wt_anchored_bce` |
 | `--distance_metric` | `cosine` / `euclidean` | `cosine` |
 | `--batch_mode` | `gene_diverse` (one gene/batch) / `cross_gene` | `gene_diverse` |
+| `--device` | `auto` / `cuda` / `cpu` (auto-detects the node) | `auto` |
+| `--embeddings_mode` | `auto` / `ram` / `stream` embedding reads | `auto` |
 | `--use_lora` | LoRA-finetune the backbone | off |
 | `--eval_every_steps` | during-training centroid eval cadence | 500 |
 | `--centroid_subsample` | held-out variants/type for centroids at eval time | 2000 |

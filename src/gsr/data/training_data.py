@@ -26,6 +26,15 @@ from gsr.data.uniref import WTRecord
 from gsr.losses.base import LABEL_TO_ID
 
 
+def select_embeddings_mode(n_items: int, dim: int, max_resident_gb: float,
+                           mode: str) -> str:
+    """Resolve 'auto' to 'ram' (fits budget) or 'stream' by pool size (mut+wt)."""
+    if mode != "auto":
+        return mode
+    pool_gb = n_items * dim * 4 * 2 / 1e9
+    return "ram" if pool_gb <= max_resident_gb else "stream"
+
+
 def build_metadata(records: List[WTRecord], args, backbone, score_cache
                    ) -> pd.DataFrame:
     """Score (cached), label over all variants, and sample the training pool."""
@@ -63,58 +72,85 @@ def build_metadata(records: List[WTRecord], args, backbone, score_cache
     return df
 
 
-def fill_embeddings(df: pd.DataFrame, args, backbone, emb_cache
-                    ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Bulk-load (mut, wt) embeddings from cache; compute+cache misses live.
+def _compute_misses(df, args, backbone, emb_cache, missing_positions,
+                    mut=None, wt=None):
+    """Compute embeddings for ``missing_positions`` (indices into df), append them
+    to the cache incrementally (resumable), and optionally scatter into resident
+    ``mut``/``wt`` arrays. Returns True if all flushes persisted."""
+    bs = getattr(args, "score_batch_size", 16)
+    flush_every = 4096
+    mseqs = df["mutated_sequence"].tolist()
+    wseqs = df["wt_seq"].tolist()
+    pos = df["pos"].astype(int).tolist()
+    vids = df["variant_id"].tolist()
+    pending_ids, pending_mut, pending_wt, all_saved = [], [], [], True
 
-    Returns resident CPU tensors aligned to ``df`` rows. Missing embeddings never
-    raise -- they are computed live; they are persisted unless another writer holds
-    the cache lock, in which case a warning is printed and they stay in memory only.
+    def _flush():
+        nonlocal all_saved, pending_ids, pending_mut, pending_wt
+        if not pending_ids:
+            return
+        ok = emb_cache.put(pending_ids, np.stack(pending_mut), np.stack(pending_wt))
+        all_saved = all_saved and ok
+        pending_ids, pending_mut, pending_wt = [], [], []
+
+    for s in tqdm(range(0, len(missing_positions), bs), desc="embed misses"):
+        idx = missing_positions[s:s + bs]
+        p = [pos[i] for i in idx]
+        m = backbone.embed([mseqs[i] for i in idx], layer=args.embedding_layer,
+                           pooling=args.pooling, positions=p).float().cpu().numpy()
+        w = backbone.embed([wseqs[i] for i in idx], layer=args.embedding_layer,
+                           pooling=args.pooling, positions=p).float().cpu().numpy()
+        for k, i in enumerate(idx):
+            if mut is not None:
+                mut[i] = m[k]
+                wt[i] = w[k]
+            pending_ids.append(vids[i])
+            pending_mut.append(m[k])
+            pending_wt.append(w[k])
+        if len(pending_ids) >= flush_every:
+            _flush()
+    _flush()
+    return all_saved
+
+
+def fill_embeddings(df: pd.DataFrame, args, backbone, emb_cache,
+                    resident: bool = True):
+    """Ensure (mut, wt) embeddings for df are cached; optionally return them resident.
+
+    resident=True  -> bulk-load cached + compute misses, return (mut, wt) tensors
+                      aligned to df (used by the in-RAM VariantDataset).
+    resident=False -> only compute+append missing embeddings to the cache in
+                      O(batch) memory (used to warm the cache for streaming). Returns
+                      (None, None).
+
+    Missing embeddings never raise; they are persisted unless another writer holds
+    the cache lock, in which case a warning is printed (kept for this run only).
     """
     vids = df["variant_id"].tolist()
-    mut_c, wt_c, missing = emb_cache.get(vids)
     D = backbone.output_dim(args.pooling)
+
+    if not resident:
+        missing_ids = set(emb_cache.missing_ids(vids))
+        missing_pos = [i for i, v in enumerate(vids) if v in missing_ids]
+        print(f"[emb] warm: {len(vids)-len(missing_pos)}/{len(vids)} cached, "
+              f"{len(missing_pos)} to compute ({args.esm_model} {args.pooling})")
+        if missing_pos and not _compute_misses(df, args, backbone, emb_cache,
+                                               missing_pos):
+            print("[emb] WARNING: cache locked by another writer; some embeddings "
+                  "were NOT persisted this run.")
+        return None, None
+
+    mut_c, wt_c, missing = emb_cache.get(vids)
     mut = np.zeros((len(vids), D), np.float32)
     wt = np.zeros((len(vids), D), np.float32)
-    if mut_c.size:                       # some were cached
+    if mut_c.size:
         found = [i for i in range(len(vids)) if i not in set(missing)]
         mut[found] = mut_c[found]
         wt[found] = wt_c[found]
     print(f"[emb] {len(vids)-len(missing)}/{len(vids)} cached, "
           f"{len(missing)} to compute ({args.esm_model} {args.pooling})")
-
-    if missing:
-        bs = getattr(args, "score_batch_size", 16)
-        flush_every = 4096  # persist incrementally so long fills are resumable
-        mseqs = df["mutated_sequence"].tolist()
-        wseqs = df["wt_seq"].tolist()
-        pos = df["pos"].astype(int).tolist()
-        pending, any_unsaved = [], False
-
-        def _flush(rows):
-            nonlocal any_unsaved
-            if not rows:
-                return
-            ok = emb_cache.put([vids[i] for i in rows],
-                               mut[rows], wt[rows])
-            any_unsaved = any_unsaved or (not ok)
-
-        for s in tqdm(range(0, len(missing), bs), desc="embed misses"):
-            idx = missing[s:s + bs]
-            p = [pos[i] for i in idx]
-            m = backbone.embed([mseqs[i] for i in idx], layer=args.embedding_layer,
-                               pooling=args.pooling, positions=p).float().cpu().numpy()
-            w = backbone.embed([wseqs[i] for i in idx], layer=args.embedding_layer,
-                               pooling=args.pooling, positions=p).float().cpu().numpy()
-            for k, i in enumerate(idx):
-                mut[i] = m[k]
-                wt[i] = w[k]
-            pending.extend(idx)
-            if len(pending) >= flush_every:
-                _flush(pending)
-                pending = []
-        _flush(pending)
-        if any_unsaved:
-            print("[emb] WARNING: cache locked by another writer for some flushes; "
-                  "those embeddings were NOT persisted this run (kept in memory).")
+    if missing and not _compute_misses(df, args, backbone, emb_cache, missing,
+                                       mut=mut, wt=wt):
+        print("[emb] WARNING: cache locked by another writer; some embeddings "
+              "were NOT persisted this run (kept in memory).")
     return torch.from_numpy(mut), torch.from_numpy(wt)

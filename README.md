@@ -64,15 +64,17 @@ frozen ESM embedding ──► projection head (3-layer MLP) ──► contrasti
 src/gsr/            installable package
   args.py           all configuration (argparse) + validation
   paths.py          scratch/output path constants (single source of truth)
-  data/             uniref loading, mutagenesis, labeling, dataset, sampler, dms
+  cache/            content-addressed score + embedding caches (shared across runs)
+  data/             uniref loading, mutagenesis, labeling, training_data, datasets,
+                    sampler, dms
   backbone/         ESM-C loading, pooling, LoRA
-  scoring/          LL/PLL scorers + parquet+h5 storage
+  scoring/          LL/PLL scorers + parquet+h5 store (utility)
   models/           projection head (configurable MLP)
-  losses/           contrastive_ce (default), ntxent, triplet
-  eval/             centroid Spearman, dim-reduction, regression, provider
+  losses/           wt_anchored_bce (default), contrastive_ce, ntxent, triplet
+  eval/             centroid Spearman, dim-reduction, regression, dms cache
   train/            training loop
-  utils/            stats, hashing, seeding, logging, spearman
-scripts/            thin entrypoints: build_dataset, train, eval_embeddings
+  utils/            stats, hashing, seeding, spearman, wandb
+scripts/            thin entrypoints: train, eval_embeddings
 run/                human-editable sbatch scripts (edit vars at the top)
 tests/              CPU unit tests
 ```
@@ -82,13 +84,14 @@ tests/              CPU unit tests
 Code lives in `/home/jv2807/gene_structure` (**code only**). Everything heavy goes
 to `/scratch/jv2807/gene_structure_removal/`:
 
-| Dir           | Contents                                             |
-|---------------|------------------------------------------------------|
-| `data/`       | Downloaded human UniRef90, DMS CSVs, gene splits     |
-| `scores/`     | Per-variant LL/PLL + metadata (Parquet)              |
-| `embeddings/` | Per-variant embeddings (HDF5 shards + `manifest.json`)|
-| `runs/`       | Checkpoints, resolved args, wandb, logs              |
-| `eval/`       | Standalone evaluation figures + metric tables        |
+| Dir                   | Contents                                                  |
+|-----------------------|-----------------------------------------------------------|
+| `data/`               | Downloaded human UniRef90 FASTA                            |
+| `cache/scores/`       | Per-gene LL/PLL for all variants (Parquet), by model+scorer|
+| `cache/embeddings/`   | Per-variant mut+WT embeddings (HDF5), by model+layer+pooling|
+| `eval/dms_cache/`     | Frozen ESM embeddings of DMS eval variants                |
+| `runs/`               | Checkpoints (`best.pt`/`final.pt`), resolved args, wandb  |
+| `eval/`               | Standalone evaluation figures + metric tables             |
 
 ## Quickstart (NYU Torch HPC)
 
@@ -97,19 +100,28 @@ login node**. Each step has a `run/*.sbatch` script whose top-of-file variables
 are the only thing you edit (the single place to change any hyperparameter).
 
 ```bash
-# 1. Build the training dataset (score + embed sampled variants -> store/<name>)
-sbatch run/build_dataset.sbatch
-
-# 2. Train the projection head on that store
+# 1. Train the projection head directly from the UniRef FASTA. Scores and
+#    embeddings are computed lazily and CACHED on first use (content-addressed),
+#    then reused by later runs — there is no separate build step.
 sbatch run/train.sbatch
 
-# 3. Evaluate any embeddings — leave CHECKPOINT empty for the raw-backbone
+# 2. Evaluate any embeddings — leave CHECKPOINT empty for the raw-backbone
 #    baseline, or point it at a run's best.pt to evaluate the projection.
 sbatch run/eval_embeddings.sbatch
 ```
 
 Interactive one-offs use `srun` inside the overlay — see `run/srun_interactive.md`.
 Every run prints dataset stats up front as a sanity check.
+
+**Caching & GPU utilization.** Per-gene LL/PLL scores are cached under
+`cache/scores/<model>_<scorer>/` and per-variant embeddings under
+`cache/embeddings/<model>_L<layer>_<pooling>/`, keyed by content so different runs
+reuse the overlap and different pooling/scorer configs never collide. To keep GPU
+utilization high, a run **bulk-loads** its embeddings once and holds them resident
+(no per-batch H5 reads); cold embeddings are computed live on the first epoch
+(which keeps the GPU busy) and then cached. A missing embedding is never fatal —
+it is computed live and saved unless another writer holds the cache lock, in which
+case it stays in memory for that run with a warning.
 
 ## Key options
 

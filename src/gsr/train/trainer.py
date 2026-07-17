@@ -47,8 +47,8 @@ class Trainer:
         params = list(self.head.parameters()) + list(self.loss_fn.parameters())
         self.optim = torch.optim.AdamW(params, lr=args.lr,
                                        weight_decay=args.weight_decay)
-        self.scaler = torch.cuda.amp.GradScaler(enabled=args.amp and
-                                                self.device == "cuda")
+        self.amp_enabled = args.amp and self.device == "cuda"
+        self.scaler = torch.amp.GradScaler("cuda", enabled=self.amp_enabled)
 
         self.sampler = GeneBatchSampler(
             dataset, batch_size=args.batch_size, batch_mode=args.batch_mode,
@@ -116,8 +116,7 @@ class Trainer:
                 emb = emb.to(self.device)
                 y = y.to(self.device)
                 self.optim.zero_grad()
-                with torch.cuda.amp.autocast(enabled=args.amp and
-                                             self.device == "cuda"):
+                with torch.amp.autocast("cuda", enabled=self.amp_enabled):
                     z = self.head(emb)
                     loss, metrics = self.loss_fn(z, y)
                 self.scaler.scale(loss).backward()

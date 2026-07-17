@@ -39,7 +39,9 @@ class NTXentLoss(BaseLoss):
         if has_pos.sum() == 0:
             zero = z.sum() * 0.0
             return zero, {"loss": 0.0, "n_anchors": 0.0}
-        pos_log_prob = (log_prob * pos_mask).sum(1)[has_pos] / \
+        # `where` (not multiply): the masked-out diagonal is -inf, and -inf*0=nan.
+        pos_lp = torch.where(pos_mask, log_prob, torch.zeros_like(log_prob))
+        pos_log_prob = pos_lp.sum(1)[has_pos] / \
             pos_mask.sum(1)[has_pos].clamp(min=1)
         loss = -pos_log_prob.mean()
         return loss, {"loss": float(loss.detach()),

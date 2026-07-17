@@ -1,11 +1,13 @@
 #!/bin/bash
 #SBATCH --job-name=gsr_warm
 #SBATCH --account=torch_pr_800_cds
-#SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=4
+#SBATCH --gres=gpu:h200:1
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/%x_%j.out
+#SBATCH --mail-user=jv2807@nyu.edu
+#SBATCH --mail-type=BEGIN,END,FAIL
 
 # =====================================================================
 # GPU cache-warming (sustained-high-util ESM fill), then exit. Fills the
@@ -21,7 +23,7 @@ ESM_MODEL=esmc_600m
 EMBEDDING_LAYER=-1
 POOLING=concat
 SCORER=masked_marginal
-SCORE_BATCH_SIZE=16
+SCORE_BATCH_SIZE=64
 VARIANTS_PER_GENE=150
 MIN_VARIANTS_PER_GENE=10
 QUARTILE_LOW=0.25

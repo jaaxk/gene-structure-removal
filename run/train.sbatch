@@ -1,11 +1,13 @@
 #!/bin/bash
 #SBATCH --job-name=gsr_train
 #SBATCH --account=torch_pr_800_cds
-#SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=4
+#SBATCH --gres=gpu:h200:1
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/%x_%j.out
+#SBATCH --mail-user=jv2807@nyu.edu
+#SBATCH --mail-type=BEGIN,END,FAIL
 
 # =====================================================================
 # Train the projection head (lazy hybrid flow: scores + embeddings are
@@ -26,7 +28,7 @@ POOLING=concat             # mean | mutated_position | concat
 
 # --- labels (frozen-ESM likelihood) ---
 SCORER=masked_marginal     # masked_marginal | wt_marginal | pll
-SCORE_BATCH_SIZE=16
+SCORE_BATCH_SIZE=64        # embedding/scoring forward batch (H200 handles 64+)
 VARIANTS_PER_GENE=150      # variants embedded + trained on per gene
 MIN_VARIANTS_PER_GENE=10
 QUARTILE_LOW=0.25

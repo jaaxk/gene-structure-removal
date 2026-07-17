@@ -1,11 +1,13 @@
 #!/bin/bash
 #SBATCH --job-name=gsr_eval
 #SBATCH --account=torch_pr_800_cds
-#SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=4
+#SBATCH --gres=gpu:h200:1
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
 #SBATCH --time=04:00:00
 #SBATCH --output=logs/%x_%j.out
+#SBATCH --mail-user=jv2807@nyu.edu
+#SBATCH --mail-type=BEGIN,END,FAIL
 
 # =====================================================================
 # Standalone evaluation of embeddings. Leave CHECKPOINT empty to get the

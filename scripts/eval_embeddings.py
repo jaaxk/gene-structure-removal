@@ -96,6 +96,7 @@ def main():
     if "centroid" in args.evaluators:
         from gsr.eval.centroid import CentroidDMSEvaluator
         ev = CentroidDMSEvaluator(args, emb, meta)
+        ev.save_splits(out_dir / "gene_splits.json")
         m = ev.evaluate(project_fn)
         metrics.update(m)
         print(f"[eval] centroid spearman_mean={m['centroid/spearman_mean']:.4f} "

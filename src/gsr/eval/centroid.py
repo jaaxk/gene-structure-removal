@@ -53,6 +53,21 @@ class CentroidDMSEvaluator:
         emb, meta = build_or_load_dms_cache(args, backbone=backbone)
         return cls(args, emb, meta)
 
+    def save_splits(self, path) -> None:
+        """Persist the per-selection-type centroid/query gene split for provenance
+        (the split is deterministic from seed + held_out_gene_frac + gene set)."""
+        import json
+        from pathlib import Path
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "seed": self.seed,
+            "held_out_gene_frac": self.held_out_gene_frac,
+            "splits": self.splits,
+        }
+        with open(path, "w") as fh:
+            json.dump(meta, fh, indent=2)
+
     def reprepare(self, subsample: int) -> None:
         """Rebuild centroid/query indices with a different centroid subsample
         (e.g. 0 = use all variants, for the final full-centroid eval)."""
@@ -72,10 +87,15 @@ class CentroidDMSEvaluator:
             m.loc[g.index[lo], "_lo"] = True
 
         self.types = {}
+        self.splits = {}
         for stype, g in m.groupby("selection_type"):
             genes = g["uniprot_id"].tolist()
             centroid_genes, query_genes = gene_level_split(
                 genes, query_frac=self.held_out_gene_frac, seed=self.seed)
+            self.splits[stype] = {
+                "centroid_genes": sorted(centroid_genes),
+                "query_genes": sorted(query_genes),
+            }
             in_centroid = g["uniprot_id"].isin(centroid_genes)
             in_query = g["uniprot_id"].isin(query_genes)
             hi_idx = g.index[in_centroid & g["_hi"]].to_numpy()

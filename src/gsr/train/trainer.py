@@ -93,6 +93,8 @@ class Trainer:
 
         self.run_dir = paths.run_dir(args.run_name)
         paths.ensure_dirs(self.run_dir)
+        if self.evaluator is not None and hasattr(self.evaluator, "save_splits"):
+            self.evaluator.save_splits(self.run_dir / "gene_splits.json")
         self.wandb = WandbLogger(args.wandb_project, args.run_name, vars(args),
                                  mode=args.wandb_mode, dir=str(self.run_dir))
         self.best_metric = -float("inf")

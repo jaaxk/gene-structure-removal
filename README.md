@@ -42,14 +42,21 @@ frozen ESM embedding ──► projection head (3-layer MLP) ──► contrasti
 ```
 
 - **Backbone:** ESM-C 600M (frozen by default; optional LoRA finetuning).
+- **Pooling (`concat` default):** each variant is `[mean-pool, mutated-residue
+  embedding]`. The wild-type is pooled at the **same** mutated residue, so a
+  variant is compared to its WT like-for-like at that position. `mean` and
+  `mutated_position` are also available.
 - **Labels:** frozen-ESM likelihood — `masked_marginal` (default), `wt_marginal`
   (cheapest), or full `pll` (most faithful, opt-in).
-- **Loss:** in-batch cross-entropy contrastive (same-quartile pairs are positives;
-  learnable scale/bias on the similarity logit). NT-Xent and triplet are
-  swappable alternatives.
+- **Loss (`wt_anchored_bce` default):** each mutant is pulled toward / pushed from
+  **its own WT** by cross-entropy on the label (close vs far likelihood).
+  `contrastive_ce` (in-batch pairs *between mutants*, mirroring `dms_contrastive`),
+  `ntxent`, and `triplet` are swappable alternatives.
 - **Batching:** by default each batch is drawn from a *single gene*, and every
   gene is seen once per epoch (maximum gene diversity); genes then repeat with
   fresh variants.
+- **LoRA:** with `--use_lora` the backbone is finetuned and embeddings are computed
+  live from sequences each step (frozen cached path otherwise).
 
 ## Repository layout
 
@@ -112,10 +119,10 @@ in the `run/*.sbatch` scripts. The knobs most likely to matter:
 | Option | Meaning | Default |
 |--------|---------|---------|
 | `--esm_model` | backbone (`esmc_600m`/`esmc_300m`/`esm2_650m`) | `esmc_600m` |
-| `--pooling` | `mean` / `mutated_position` / `concat` | `mean` |
+| `--pooling` | `mean` / `mutated_position` / `concat` | `concat` |
 | `--scorer` | label source: `masked_marginal`/`wt_marginal`/`pll` | `masked_marginal` |
 | `--variants_per_gene` | variants sampled + embedded per gene | 200 |
-| `--loss_type` | `contrastive_ce` / `ntxent` / `triplet` | `contrastive_ce` |
+| `--loss_type` | `wt_anchored_bce` / `contrastive_ce` / `ntxent` / `triplet` | `wt_anchored_bce` |
 | `--distance_metric` | `cosine` / `euclidean` | `cosine` |
 | `--batch_mode` | `gene_diverse` (one gene/batch) / `cross_gene` | `gene_diverse` |
 | `--use_lora` | LoRA-finetune the backbone | off |
@@ -130,9 +137,10 @@ skeleton → Phase 1 data/store → Phase 2 scoring/labels → Phase 3 head/loss
 unit-tested, and validated on real data (95,627 human UniRef90 sequences; a
 300-gene dev store; DMS centroid + regression + dim-reduction baselines).
 
-**Note on pooling:** mean pooling washes out single-residue signal (one changed
-residue in a ~200-long average), so raw-backbone zero-shot scores are weak — this
-is the gene-structure problem the projection is meant to fix. `concat` pooling
-(mean + mutated-position) is expected to carry much more per-variant signal.
+**Note on pooling:** `mean` pooling washes out single-residue signal (one changed
+residue in a ~200-long average), giving near-zero raw-backbone zero-shot scores —
+the gene-structure problem the projection targets. The default is now `concat`
+(mean + mutated-residue), which retains the local signal; the WT is pooled at the
+same mutated residue so the mutant/WT comparison is like-for-like.
 
 This README is updated whenever a feature is added or changed.

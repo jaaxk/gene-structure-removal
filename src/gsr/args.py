@@ -35,6 +35,8 @@ def build_parser() -> argparse.ArgumentParser:
     g = p.add_argument_group("run")
     g.add_argument("--run_name", type=str, required=True,
                    help="Unique name; outputs go to <scratch>/runs/<run_name>/.")
+    g.add_argument("--dataset_name", type=str, required=True,
+                   help="Store subdir under <scratch>/store/ built by build_dataset.py.")
     g.add_argument("--seed", type=int, default=0)
     g.add_argument("--wandb_project", type=str, default="gene-structure-removal")
     g.add_argument("--wandb_mode", type=str, default="online",

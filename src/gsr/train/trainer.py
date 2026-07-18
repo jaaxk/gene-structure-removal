@@ -112,6 +112,7 @@ class Trainer:
         self.global_step = 0
         self.save_ckpt = not getattr(args, "no_save_checkpoints", False)
         self._best_head_state = None  # RAM copy of the best head (for final eval)
+        self._best_lora_state = None  # RAM copy of the best LoRA adapters
 
     def _trainable_params(self):
         params = list(self.head.parameters()) + list(self.loss_fn.parameters())
@@ -152,20 +153,36 @@ class Trainer:
             return z
         return fn
 
+    def _eval_kwargs(self) -> dict:
+        """For LoRA, re-embed DMS variants through the live backbone so the metric
+        reflects the finetuned backbone (not the frozen cache)."""
+        if self.use_lora:
+            return dict(backbone=self.backbone, embed_args=dict(
+                layer=self.args.embedding_layer, pooling=self.args.pooling,
+                batch_size=self.args.score_batch_size))
+        return {}
+
+    def _lora_state(self) -> dict:
+        return {k: v.detach().cpu().clone()
+                for k, v in self.backbone.model.state_dict().items()
+                if "lora" in k.lower()}
+
     def _run_eval(self, tag: str) -> None:
         if self.evaluator is None:
             return
-        metrics = self.evaluator.evaluate(self._project_fn())
+        metrics = self.evaluator.evaluate(self._project_fn(), **self._eval_kwargs())
         self.wandb.log({f"eval/{k}": v for k, v in metrics.items()},
                        step=self.global_step)
         primary = metrics.get(self.evaluator.primary_metric, float("nan"))
         print(f"[eval:{tag}] {self.evaluator.primary_metric}={primary:.4f}")
         if primary == primary and primary > self.best_metric:
             self.best_metric = primary
-            # Always keep the best head in RAM (for the final full-centroid eval);
-            # write it to disk only when checkpointing is enabled.
+            # Keep the best head (and LoRA adapters) in RAM for the final eval;
+            # write to disk only when checkpointing is enabled.
             self._best_head_state = {k: v.detach().cpu().clone()
                                      for k, v in self.head.state_dict().items()}
+            if self.use_lora:
+                self._best_lora_state = self._lora_state()
             if self.save_ckpt:
                 self._save_checkpoint("best.pt")
             print(f"[eval:{tag}] new best ({primary:.4f})")
@@ -248,8 +265,13 @@ class Trainer:
                 x = torch.from_numpy(np.asarray(emb, dtype=np.float32)).to(self.device)
                 return head(x).cpu().numpy()
 
+        # For LoRA, restore the best adapters so the final eval re-embeds DMS
+        # through the best backbone (not just the best head).
+        if self.use_lora and self._best_lora_state is not None:
+            self.backbone.model.load_state_dict(self._best_lora_state, strict=False)
+
         self.evaluator.reprepare(0)  # full centroids
-        metrics = self.evaluator.evaluate(project)
+        metrics = self.evaluator.evaluate(project, **self._eval_kwargs())
         self.wandb.log({f"final_full/{k}": v for k, v in metrics.items()},
                        step=self.global_step)
         print(f"[eval:final_full] best-ckpt macro Spearman="

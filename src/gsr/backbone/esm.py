@@ -101,9 +101,12 @@ class ESMBackbone:
                                   need_hidden=False, layer=-1)
         return logits
 
-    def _forward(self, input_ids, attention_mask, need_hidden: bool, layer: int):
+    def _forward(self, input_ids, attention_mask, need_hidden: bool, layer: int,
+                 use_grad: bool = None):
         want_hidden_states = need_hidden and layer != -1
-        ctx = torch.enable_grad() if self.use_lora else torch.no_grad()
+        if use_grad is None:
+            use_grad = self.use_lora
+        ctx = torch.enable_grad() if use_grad else torch.no_grad()
         with ctx:
             out = self.model(
                 input_ids=input_ids, attention_mask=attention_mask,
@@ -121,14 +124,16 @@ class ESMBackbone:
         return logits, hidden
 
     # --- embeddings -----------------------------------------------------
-    def forward_reps(self, sequences: List[str], layer: int = -1):
+    def forward_reps(self, sequences: List[str], layer: int = -1, grad: bool = None):
         """Per-residue hidden states + attention mask for a batch.
 
-        Runs with gradients when LoRA is enabled (live finetuning) and under
-        no_grad otherwise (frozen backbone). Token index == 1-indexed residue pos.
+        ``grad`` defaults to the backbone's mode (grad on for LoRA training, off
+        when frozen); pass ``grad=False`` to force no-grad even for a LoRA backbone
+        (e.g. re-embedding DMS variants during eval). Token index == 1-indexed pos.
         """
         input_ids, attn = self._tokenize(sequences)
-        _, hidden = self._forward(input_ids, attn, need_hidden=True, layer=layer)
+        _, hidden = self._forward(input_ids, attn, need_hidden=True, layer=layer,
+                                  use_grad=grad)
         return hidden, attn
 
     def embed(
@@ -137,15 +142,16 @@ class ESMBackbone:
         layer: int = -1,
         pooling: str = "mean",
         positions: Optional[List[Optional[int]]] = None,
+        grad: bool = None,
     ) -> torch.Tensor:
         """Return pooled embeddings (B, out_dim) for a batch of sequences.
 
         ``positions`` are 1-indexed mutated residue positions (one per sequence);
         ``None`` uses the mean vector for the positional component. For a WT pooled
         relative to a mutant, pass the mutant's position so both are pooled at the
-        same residue.
+        same residue. ``grad=False`` forces no-grad (used for eval re-embedding).
         """
-        hidden, attn = self.forward_reps(sequences, layer=layer)
+        hidden, attn = self.forward_reps(sequences, layer=layer, grad=grad)
         return pool_batch(hidden, attn, positions, pooling)
 
     def output_dim(self, pooling: str) -> int:

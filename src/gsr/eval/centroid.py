@@ -112,12 +112,59 @@ class CentroidDMSEvaluator:
             self.types[stype] = dict(hi=hi_idx, lo=lo_idx, q=q_idx,
                                      dms=m.loc[q_idx, "DMS_score"].to_numpy())
 
-    def evaluate(self, project_fn: Callable[[np.ndarray], np.ndarray]) -> Dict[str, float]:
-        Z = project_fn(self.embeddings)
+    def _embed_rows(self, backbone, embed_args, rows) -> np.ndarray:
+        """Re-embed the given meta rows through ``backbone`` (grad-free), for the
+        LoRA path where DMS embeddings must reflect the finetuned backbone."""
+        import torch
+        seqs = self.meta["mutated_sequence"].to_numpy()
+        pos = self.meta["pos"].to_numpy()
+        bs = embed_args.get("batch_size", 16)
+        layer = embed_args.get("layer", -1)
+        pooling = embed_args.get("pooling", "concat")
+        was_training = backbone.model.training
+        backbone.model.eval()
+        outs = []
+        with torch.no_grad():
+            for s in range(0, len(rows), bs):
+                idx = rows[s:s + bs]
+                e = backbone.embed([seqs[i] for i in idx], layer=layer,
+                                   pooling=pooling,
+                                   positions=[int(pos[i]) for i in idx], grad=False)
+                outs.append(e.float().cpu().numpy())
+        if was_training:
+            backbone.model.train()
+        return np.concatenate(outs, 0) if outs else np.empty((0, 0), np.float32)
+
+    def evaluate(self, project_fn: Callable[[np.ndarray], np.ndarray],
+                 backbone=None, embed_args=None) -> Dict[str, float]:
+        """Compute per-type + macro centroid Spearman.
+
+        Frozen path (backbone=None): projects the cached frozen DMS embeddings.
+        LoRA path (backbone given): re-embeds the DMS variants through the current
+        (finetuned) backbone so the metric reflects the adapted backbone; query rows
+        are capped to ``subsample`` to bound cost.
+        """
+        types = self.types
+        if backbone is not None:
+            types = {}
+            for st, t in self.types.items():
+                q, dms = t["q"], t["dms"]
+                if self.subsample and len(q) > self.subsample:
+                    sel = self.rng.choice(len(q), self.subsample, replace=False)
+                    q, dms = q[sel], dms[sel]
+                types[st] = dict(hi=t["hi"], lo=t["lo"], q=q, dms=dms)
+            used = np.unique(np.concatenate(
+                [np.concatenate([t["hi"], t["lo"], t["q"]]) for t in types.values()]))
+            fresh = self._embed_rows(backbone, embed_args or {}, used)
+            full = np.zeros((len(self.meta), fresh.shape[1]), np.float32)
+            full[used] = fresh
+            Z = project_fn(full)
+        else:
+            Z = project_fn(self.embeddings)
         sim = _cosine if self.metric == "cosine" else _neg_euclidean
         out: Dict[str, float] = {}
         diffs, axes = [], []
-        for stype, t in self.types.items():
+        for stype, t in types.items():
             high_c = Z[t["hi"]].mean(0)
             low_c = Z[t["lo"]].mean(0)
             Zq = Z[t["q"]]

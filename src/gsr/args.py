@@ -51,6 +51,10 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--warm_only", action="store_true",
                    help="Fill the score + embedding + DMS caches, then exit "
                    "(a dedicated GPU pre-fill; training self-warms otherwise).")
+    g.add_argument("--no_save_checkpoints", action="store_true",
+                   help="Do not write .pt model files (best is kept in RAM for the "
+                   "final full-centroid eval); only resolved_args + metrics are "
+                   "saved. Use for hyperparameter sweeps.")
 
     # --- Backbone (ESM) -----------------------------------------------------
     g = p.add_argument_group("backbone")

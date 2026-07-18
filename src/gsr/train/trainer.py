@@ -110,6 +110,8 @@ class Trainer:
                                  mode=args.wandb_mode, dir=str(self.run_dir))
         self.best_metric = -float("inf")
         self.global_step = 0
+        self.save_ckpt = not getattr(args, "no_save_checkpoints", False)
+        self._best_head_state = None  # RAM copy of the best head (for final eval)
 
     def _trainable_params(self):
         params = list(self.head.parameters()) + list(self.loss_fn.parameters())
@@ -160,8 +162,13 @@ class Trainer:
         print(f"[eval:{tag}] {self.evaluator.primary_metric}={primary:.4f}")
         if primary == primary and primary > self.best_metric:
             self.best_metric = primary
-            self._save_checkpoint("best.pt")
-            print(f"[eval:{tag}] new best -> best.pt")
+            # Always keep the best head in RAM (for the final full-centroid eval);
+            # write it to disk only when checkpointing is enabled.
+            self._best_head_state = {k: v.detach().cpu().clone()
+                                     for k, v in self.head.state_dict().items()}
+            if self.save_ckpt:
+                self._save_checkpoint("best.pt")
+            print(f"[eval:{tag}] new best ({primary:.4f})")
 
     def _save_checkpoint(self, name: str) -> None:
         ckpt = {
@@ -215,25 +222,25 @@ class Trainer:
                     self._run_eval(tag=f"step{self.global_step}")
 
         self._run_eval(tag="final")
-        self._save_checkpoint("final.pt")
+        if self.save_ckpt:
+            self._save_checkpoint("final.pt")
         self._final_full_eval()
-        print(f"[train] done. checkpoints in {self.run_dir}")
+        print(f"[train] done. outputs in {self.run_dir}")
         self.wandb.finish()
 
     def _final_full_eval(self) -> None:
         """Evaluate the BEST checkpoint on FULL (non-subsampled) centroids."""
         if self.evaluator is None:
             return
-        best_path = self.run_dir / "best.pt"
+        # Use the best head kept in RAM (works with or without disk checkpoints).
         head = self.head
-        if best_path.exists():
-            ckpt = torch.load(best_path, map_location=self.device)
+        if self._best_head_state is not None:
             head = ProjectionHead(
-                input_dim=ckpt["input_dim"],
+                input_dim=self.head.input_dim,
                 hidden_dims=self.args.head_hidden_dims,
                 out_dim=self.args.head_out_dim, dropout=self.args.head_dropout,
                 activation=self.args.head_activation, norm=self.args.head_norm)
-            head.load_state_dict(ckpt["head_state"])
+            head.load_state_dict(self._best_head_state)
             head.eval().to(self.device)
 
         def project(emb):

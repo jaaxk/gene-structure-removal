@@ -66,6 +66,10 @@ def pool_batch(hidden: torch.Tensor, attn: torch.Tensor,
     if pooling in WT_MEAN_POOLINGS:
         if wt_mean is None:
             wt_mean = mean  # self-referential: see module docstring.
+        else:
+            # Externally supplied wt_mean (e.g. from WtMeanCache, which reads
+            # numpy/CPU data) may not already be on hidden's device/dtype.
+            wt_mean = wt_mean.to(device=mean.device, dtype=mean.dtype)
         if pooling == "wt_mut_mean_concat":
             return torch.cat([mean, pos_vec, wt_mean], dim=-1)
         return mean - wt_mean  # wt_subtracted_mean: mut_mean - wt_mean

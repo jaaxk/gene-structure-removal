@@ -55,3 +55,16 @@ def test_old_modes_unaffected_by_wt_mean_arg():
         without = pool_batch(hidden, attn, positions, pooling)
         with_arg = pool_batch(hidden, attn, positions, pooling, wt_mean=wt_mean)
         torch.testing.assert_close(without, with_arg)
+
+
+def test_wt_mean_mismatched_dtype_is_cast():
+    # Regression test: WtMeanCache round-trips wt_mean through numpy (always
+    # float32) and other call sites .cpu().numpy() it -- pool_batch must cast
+    # (and, on a real GPU run, move device) rather than erroring or silently
+    # upcasting the whole computation.
+    hidden, attn, positions = _synthetic()
+    wt_mean_f64 = torch.tensor([[10., 10., 10.], [20., 20., 20.]], dtype=torch.float64)
+    out = pool_batch(hidden, attn, positions, "wt_subtracted_mean", wt_mean=wt_mean_f64)
+    assert out.dtype == hidden.dtype
+    mean = torch.tensor([[2.5, 2.5, 2.5], [6.5, 6.5, 6.5]])
+    torch.testing.assert_close(out, mean - wt_mean_f64.to(mean.dtype))

@@ -188,6 +188,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="DMS selection types to evaluate (CSV file stems).")
     g.add_argument("--dms_max_per_assay", type=int, default=200,
                    help="Cap variants sampled per DMS assay (bounds embedding cost).")
+    g.add_argument("--dms_per_gene_subsample", type=int, default=200,
+                   help="For the LLR-projection metric: variants randomly kept per "
+                   "gene (uniprot_id, pooled across its assays), reproducible via "
+                   "--seed, so no single large gene dominates the pooled Spearman. "
+                   "Zero-shot over ALL genes -- no held-out split.")
+    g.add_argument("--primary_metric", type=str,
+                   default="llr_projection/spearman",
+                   help="Metric dict key (unprefixed) used to pick the best "
+                   "checkpoint, e.g. 'llr_projection/spearman' or "
+                   "'centroid/spearman_mean'.")
 
     return p
 
@@ -218,6 +228,7 @@ def validate_args(args: argparse.Namespace) -> None:
         )
     if args.use_lora:
         assert args.lora_rank > 0 and args.lora_alpha > 0
+    assert args.dms_per_gene_subsample > 0, "dms_per_gene_subsample must be > 0"
 
 
 def parse_args(argv=None) -> argparse.Namespace:

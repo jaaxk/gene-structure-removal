@@ -31,10 +31,19 @@ from gsr.utils.stats import print_dataset_stats
 
 
 def build_evaluator(args, backbone):
+    """``backbone`` here is always the FROZEN reference backbone (see main()) --
+    used to build/load caches (DMS embeddings, LLR). Trainer re-embeds through
+    the live LoRA backbone at eval time via ``_eval_kwargs``, independent of
+    what was used to build these caches."""
     if args.eval_per_epoch == 0 and args.eval_every_steps == 0:
         return None
     from gsr.eval.centroid import CentroidDMSEvaluator
-    return CentroidDMSEvaluator.from_args(args, backbone=backbone)
+    from gsr.eval.composite import CompositeEvaluator
+    from gsr.eval.llr_projection import LLRProjectionEvaluator
+    return CompositeEvaluator(
+        {"centroid": CentroidDMSEvaluator.from_args(args, backbone=backbone),
+         "llr_projection": LLRProjectionEvaluator.from_args(args, backbone=backbone)},
+        primary_metric=args.primary_metric)
 
 
 def _cpu_guard(msg: str) -> None:
@@ -72,6 +81,9 @@ def main():
     if args.warm_only:
         fill_embeddings(df, args, frozen, emb_cache, resident=False)
         build_or_load_dms_cache(args, backbone=frozen)
+        if args.eval_per_epoch or args.eval_every_steps:
+            from gsr.eval.llr_projection import LLRProjectionEvaluator
+            LLRProjectionEvaluator.from_args(args, backbone=frozen)
         print("[train] --warm_only: caches filled; exiting.")
         return
 

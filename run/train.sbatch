@@ -75,6 +75,8 @@ EVAL_PER_EPOCH=8           # centroid evals per epoch (0 disables)
 CENTROID_SUBSAMPLE=2000    # held-out variants/type for during-training centroids
 EVAL_DISTANCE=cosine
 HELD_OUT_GENE_FRAC=0.2
+DMS_PER_GENE_SUBSAMPLE=200 # zero-shot LLR metric: variants/gene, all 186 genes
+PRIMARY_METRIC=llr_projection/spearman  # or centroid/spearman_mean
 
 # --- tracking ---
 WANDB_PROJECT=gene-structure-removal
@@ -131,6 +133,8 @@ singularity exec --nv --overlay ${OVERLAY}:ro ${BASE} /bin/bash -c "
     --centroid_subsample ${CENTROID_SUBSAMPLE} \
     --eval_distance ${EVAL_DISTANCE} \
     --held_out_gene_frac ${HELD_OUT_GENE_FRAC} \
+    --dms_per_gene_subsample ${DMS_PER_GENE_SUBSAMPLE} \
+    --primary_metric ${PRIMARY_METRIC} \
     --wandb_project ${WANDB_PROJECT} \
     --wandb_mode ${WANDB_MODE} \
     --seed ${SEED}

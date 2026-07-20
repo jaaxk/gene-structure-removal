@@ -274,8 +274,20 @@ class Trainer:
         metrics = self.evaluator.evaluate(project, **self._eval_kwargs())
         self.wandb.log({f"final_full/{k}": v for k, v in metrics.items()},
                        step=self.global_step)
-        print(f"[eval:final_full] best-ckpt macro Spearman="
+        print(f"[eval:final_full] best-ckpt primary metric "
+              f"({self.evaluator.primary_metric})="
               f"{metrics.get(self.evaluator.primary_metric, float('nan')):.4f}")
+
+        # LLR-vs-projection-effect-score figure, from the best checkpoint.
+        llr_eval = getattr(self.evaluator, "evaluators", {}).get("llr_projection")
+        if llr_eval is not None:
+            from gsr.eval.llr_figure import make_llr_projection_figure
+            table = llr_eval.effect_table(project, **self._eval_kwargs())
+            rho = metrics.get("llr_projection/spearman", float("nan"))
+            fig_path = make_llr_projection_figure(
+                table, rho, self.run_dir / "llr_projection_figure.png")
+            self.wandb.log_figure("final_full/llr_projection_figure", str(fig_path),
+                                  step=self.global_step)
 
         # LoRA also finetunes the backbone itself, so the raw (post-LoRA,
         # pre-head) embeddings are a second candidate representation --

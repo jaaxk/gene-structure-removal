@@ -12,13 +12,24 @@ projection has actually removed gene identity signal, effect magnitude should
 sit on the same scale across genes, so it correlates with LLR even when
 everything is pooled together.
 
-Three cached artifacts under ``paths.EVAL_DIR / "llr_projection"`` (parquet +
-HDF5, same convention as ``dms_cache.py``) so repeat runs/sweeps that share a
-config never recompute anything:
-  - the per-gene-subsampled variant table (shared across scorer/layer/pooling
-    choices -- keyed only on the subsample count/seed/selection types)
+Two things are genuinely new here (never computed before anywhere in this
+repo): the LLR scores themselves, and WT embeddings (``dms_cache.py`` only
+ever caches MUTANT embeddings -- ``CentroidDMSEvaluator`` compares a variant
+to a centroid of other variants, never to its own WT). Mutant embeddings for
+this exact config are reused directly from the existing
+``gsr.eval.dms_cache`` cache (built once, shared with ``CentroidDMSEvaluator``)
+rather than recomputed -- ``build_or_load_dms_cache`` is called with the same
+args here and there, so whichever evaluator runs first warms it for the other.
+
+Cached artifacts under ``paths.EVAL_DIR / "llr_projection"`` (parquet + HDF5,
+same convention as ``dms_cache.py``):
+  - the per-gene-subsampled variant table (also carries ``_dms_cache_row``,
+    each row's position in the shared dms_cache meta/embeddings -- how mutant
+    embeddings are looked up without recomputing them)
   - LLR values for that table (depends on esm_model + scorer only)
-  - WT/mutant embeddings for that table (depends on esm_model + layer + pooling)
+  - WT embeddings, deduped by (dms_id, pos) since multiple substitutions at
+    the same site share one WT-at-that-position embedding (depends on
+    esm_model + layer + pooling)
 """
 
 from __future__ import annotations
@@ -58,16 +69,18 @@ def _llr_path(args) -> Path:
     return _cache_dir() / f"llr_{args.esm_model}_{args.scorer}_{_key(args)}.parquet"
 
 
-def _emb_path(args) -> Path:
-    return (_cache_dir() / f"emb_{args.esm_model}_layer{args.embedding_layer}"
+def _wt_emb_path(args) -> Path:
+    """WT embeddings only -- mutant embeddings are reused from dms_cache.py."""
+    return (_cache_dir() / f"wt_emb_{args.esm_model}_layer{args.embedding_layer}"
             f"_{args.pooling}_{_key(args)}.h5")
 
 
 def llr_projection_cache_exists(args) -> bool:
-    """Whether all 3 cached artifacts for this config already exist (so a CPU
-    run -- which cannot afford to compute LLR/embeddings from scratch -- is safe)."""
+    """Whether this evaluator's own cached artifacts exist (meta, LLR, WT
+    embeddings). Does NOT check dms_cache.py's mutant-embedding cache --
+    scripts/train.py's CPU guard checks that separately via dms_cache_exists."""
     return (_meta_path(args).exists() and _llr_path(args).exists()
-            and _emb_path(args).exists())
+            and _wt_emb_path(args).exists())
 
 
 def _load_wt_reference() -> pd.DataFrame:
@@ -80,6 +93,13 @@ def _load_wt_reference() -> pd.DataFrame:
 def _build_meta(args) -> pd.DataFrame:
     m = load_dms(args.dms_selection_types, max_per_assay=args.dms_max_per_assay,
                  seed=args.seed)
+    # dms_cache.py builds its embedding cache from this SAME load_dms(...) call
+    # (identical args), in this same row order, and never reorders it before
+    # caching -- so this row's position IS its position in that cache's
+    # embeddings array. Recorded now, before any merge/dropna/subsampling, so
+    # mutant embeddings can be looked up later instead of recomputed.
+    m["_dms_cache_row"] = np.arange(len(m))
+
     # Per-assay hi/lo quartile membership, computed on the FULL per-assay pool
     # before subsampling -- same convention as CentroidDMSEvaluator._prepare.
     m["_hi"] = False
@@ -91,12 +111,14 @@ def _build_meta(args) -> pd.DataFrame:
         m.loc[g.index[lo], "_lo"] = True
 
     ref = _load_wt_reference()
+    # how="left" + validate="many_to_one" preserves row count/order, so
+    # _dms_cache_row set above stays correct through this merge.
     m = m.merge(ref, on="dms_id", how="left", validate="many_to_one")
     missing = int(m["target_seq"].isna().sum())
     if missing:
         print(f"[llr_projection] WARNING: {missing} variants have no target_seq "
               "match in DMS_substitutions.csv; dropping")
-        m = m.dropna(subset=["target_seq"]).reset_index(drop=True)
+        m = m.dropna(subset=["target_seq"])
     m["relative_pos"] = m["pos"] / m["seq_len"]
 
     # Per-GENE (not per-assay) reproducible subsample: multi-assay genes are
@@ -177,43 +199,58 @@ def _build_or_load_llr(args, meta: pd.DataFrame, backbone) -> pd.DataFrame:
     return out
 
 
-def _embed_pairs(args, meta: pd.DataFrame, backbone, layer, pooling, batch_size):
-    mut_seqs = meta["mutated_sequence"].tolist()
-    wt_seqs = meta["target_seq"].tolist()
-    positions = meta["pos"].tolist()
-    X_mut, X_wt = [], []
-    for s in tqdm(range(0, len(meta), batch_size), desc="embed llr_projection"):
+def _mutant_embeddings_from_dms_cache(args, meta: pd.DataFrame, backbone) -> np.ndarray:
+    """Reuse the existing dms_cache.py mutant-embedding cache (same config,
+    built once and shared with CentroidDMSEvaluator) instead of recomputing."""
+    from gsr.eval.dms_cache import build_or_load_dms_cache
+    full_X, _full_meta = build_or_load_dms_cache(args, backbone=backbone)
+    return full_X[meta["_dms_cache_row"].to_numpy()]
+
+
+def _embed_wt_deduped(args, meta: pd.DataFrame, backbone, layer, pooling,
+                      batch_size) -> np.ndarray:
+    """Embed each unique (dms_id, pos) WT-at-position exactly once (multiple
+    substitutions at the same site share the same WT embedding under
+    position-matched pooling), then broadcast back to meta's row order."""
+    uniq = meta[["dms_id", "pos", "target_seq"]].drop_duplicates(
+        subset=["dms_id", "pos"]).reset_index(drop=True)
+    key_to_row = {(d, p): i for i, (d, p) in enumerate(zip(uniq["dms_id"], uniq["pos"]))}
+
+    wt_seqs = uniq["target_seq"].tolist()
+    positions = uniq["pos"].tolist()
+    out = []
+    for s in tqdm(range(0, len(uniq), batch_size), desc="embed WT (deduped)"):
         sl = slice(s, s + batch_size)
-        e_mut = backbone.embed(mut_seqs[sl], layer=layer, pooling=pooling,
-                               positions=positions[sl], grad=False)
-        e_wt = backbone.embed(wt_seqs[sl], layer=layer, pooling=pooling,
-                              positions=positions[sl], grad=False)
-        X_mut.append(e_mut.float().cpu().numpy())
-        X_wt.append(e_wt.float().cpu().numpy())
-    X_mut = np.concatenate(X_mut, axis=0).astype(np.float32)
-    X_wt = np.concatenate(X_wt, axis=0).astype(np.float32)
-    return X_wt, X_mut
+        e = backbone.embed(wt_seqs[sl], layer=layer, pooling=pooling,
+                           positions=positions[sl], grad=False)
+        out.append(e.float().cpu().numpy())
+    X_uniq = np.concatenate(out, axis=0).astype(np.float32)
+
+    row_to_uniq = np.array(
+        [key_to_row[(d, p)] for d, p in zip(meta["dms_id"], meta["pos"])])
+    return X_uniq[row_to_uniq]
 
 
-def _build_or_load_embeddings(args, meta: pd.DataFrame, backbone):
-    path = _emb_path(args)
+def _build_or_load_wt_embeddings(args, meta: pd.DataFrame, backbone) -> np.ndarray:
+    path = _wt_emb_path(args)
     if path.exists():
         with h5py.File(path, "r") as h5:
-            return h5["X_wt"][:], h5["X_mut"][:]
-    print(f"[llr_projection] embedding {len(meta)} WT/mutant pairs")
+            return h5["X_wt"][:]
+    n_unique = meta.drop_duplicates(subset=["dms_id", "pos"]).shape[0]
+    print(f"[llr_projection] embedding {n_unique} unique WT-at-position vectors "
+          f"for {len(meta)} variants")
     was_training = backbone.model.training
     backbone.model.eval()
     with torch.no_grad():
-        X_wt, X_mut = _embed_pairs(args, meta, backbone, args.embedding_layer,
-                                   args.pooling, args.score_batch_size)
+        X_wt = _embed_wt_deduped(args, meta, backbone, args.embedding_layer,
+                                 args.pooling, args.score_batch_size)
     if was_training:
         backbone.model.train()
     path.parent.mkdir(parents=True, exist_ok=True)
     with h5py.File(path, "w") as h5:
         h5.create_dataset("X_wt", data=X_wt, compression="gzip", compression_opts=4)
-        h5.create_dataset("X_mut", data=X_mut, compression="gzip", compression_opts=4)
-    print(f"[llr_projection] cached embeddings {X_mut.shape} -> {path}")
-    return X_wt, X_mut
+    print(f"[llr_projection] cached WT embeddings {X_wt.shape} -> {path}")
+    return X_wt
 
 
 def _cosine_distance(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -244,7 +281,8 @@ class LLRProjectionEvaluator:
             backbone = ESMBackbone(args.esm_model, device=device)
         meta = _build_or_load_meta(args)
         llr_df = _build_or_load_llr(args, meta, backbone)
-        X_wt, X_mut = _build_or_load_embeddings(args, meta, backbone)
+        X_mut = _mutant_embeddings_from_dms_cache(args, meta, backbone)
+        X_wt = _build_or_load_wt_embeddings(args, meta, backbone)
         return cls(args, meta, llr_df["llr"].to_numpy(dtype=np.float32), X_wt, X_mut)
 
     def reprepare(self, subsample: int) -> None:
@@ -253,18 +291,31 @@ class LLRProjectionEvaluator:
         return
 
     def _embed_rows_live(self, backbone, embed_args: dict):
-        """Re-embed WT/mutant pairs through a LIVE (e.g. LoRA-finetuned) backbone."""
+        """Re-embed WT/mutant pairs through a LIVE (e.g. LoRA-finetuned)
+        backbone -- no caching or dms_cache reuse here, since the whole point
+        is that the backbone has moved on from whatever it was when any cache
+        was built."""
         bs = embed_args.get("batch_size", self.args.score_batch_size)
         layer = embed_args.get("layer", self.args.embedding_layer)
         pooling = embed_args.get("pooling", self.args.pooling)
+        mut_seqs = self.meta["mutated_sequence"].tolist()
+        wt_seqs = self.meta["target_seq"].tolist()
+        positions = self.meta["pos"].tolist()
         was_training = backbone.model.training
         backbone.model.eval()
+        X_mut, X_wt = [], []
         with torch.no_grad():
-            X_wt, X_mut = _embed_pairs(self.args, self.meta, backbone, layer,
-                                       pooling, bs)
+            for s in range(0, len(self.meta), bs):
+                sl = slice(s, s + bs)
+                X_mut.append(backbone.embed(mut_seqs[sl], layer=layer, pooling=pooling,
+                                            positions=positions[sl], grad=False)
+                             .float().cpu().numpy())
+                X_wt.append(backbone.embed(wt_seqs[sl], layer=layer, pooling=pooling,
+                                           positions=positions[sl], grad=False)
+                            .float().cpu().numpy())
         if was_training:
             backbone.model.train()
-        return X_wt, X_mut
+        return np.concatenate(X_wt, 0), np.concatenate(X_mut, 0)
 
     def effect_table(self, project_fn: Callable[[np.ndarray], np.ndarray],
                       backbone=None, embed_args: Optional[dict] = None) -> pd.DataFrame:

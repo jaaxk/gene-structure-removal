@@ -1,11 +1,18 @@
 #!/bin/bash
-# Launch one LoRA tuning run on an already-allocated GPU job via srun --overlap.
+# Launch one LoRA tuning run on an already-allocated GPU job by SSHing directly
+# into the allocated node (avoids srun --overlap step-scheduling issues).
 # Usage: tune_launch_lora.sh <gpu_jobid> <run_name> <extra train.py args...>
 set -uo pipefail
 GPU_JOBID="$1"; shift
 RUN_NAME="$1"; shift
 LOGDIR=/scratch/jv2807/gene_structure_removal/tune/logs
 mkdir -p "$LOGDIR"
+
+NODE=$(squeue -j "$GPU_JOBID" -h -o "%N")
+if [ -z "$NODE" ]; then
+  echo "ERROR: could not resolve node for jobid $GPU_JOBID" >&2
+  exit 1
+fi
 
 FIXED_ARGS=(
   --fasta_path /scratch/jv2807/gene_structure_removal/data/human_uniref90.fasta
@@ -19,11 +26,11 @@ FIXED_ARGS=(
   --run_name "$RUN_NAME"
 )
 
-srun --jobid="$GPU_JOBID" --overlap --exact --mem=48G --cpu-bind=none \
-  singularity exec --nv --overlay /scratch/jv2807/dms_singularity/dms_contrastive.ext3:ro \
+ssh -o BatchMode=yes "$NODE" "singularity exec --nv \
+  --overlay /scratch/jv2807/dms_singularity/dms_contrastive.ext3:ro \
   /share/apps/images/cuda12.1.1-cudnn8.9.0-devel-ubuntu22.04.2.sif /bin/bash -c \
-  "source /ext3/env.sh && export HDF5_USE_FILE_LOCKING=FALSE PYTHONUNBUFFERED=1 && \
-   cd /home/jv2807/gene_structure && PYTHONPATH=src python scripts/train.py ${FIXED_ARGS[*]} $* " \
+  'source /ext3/env.sh && export HDF5_USE_FILE_LOCKING=FALSE PYTHONUNBUFFERED=1 && \
+   cd /home/jv2807/gene_structure && PYTHONPATH=src python scripts/train.py ${FIXED_ARGS[*]} $* '" \
   > "$LOGDIR/$RUN_NAME.log" 2>&1 &
 
-echo "launched $RUN_NAME (pid $!) -> $LOGDIR/$RUN_NAME.log"
+echo "launched $RUN_NAME (pid $!) on $NODE -> $LOGDIR/$RUN_NAME.log"

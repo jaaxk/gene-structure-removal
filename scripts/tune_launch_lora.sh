@@ -19,7 +19,7 @@ FIXED_ARGS=(
   --run_name "$RUN_NAME"
 )
 
-srun --jobid="$GPU_JOBID" --overlap --exact \
+srun --jobid="$GPU_JOBID" --overlap --exact --mem=48G --cpu-bind=none \
   singularity exec --nv --overlay /scratch/jv2807/dms_singularity/dms_contrastive.ext3:ro \
   /share/apps/images/cuda12.1.1-cudnn8.9.0-devel-ubuntu22.04.2.sif /bin/bash -c \
   "source /ext3/env.sh && export HDF5_USE_FILE_LOCKING=FALSE PYTHONUNBUFFERED=1 && \

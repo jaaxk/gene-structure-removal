@@ -14,7 +14,10 @@
 # cached content-addressed and reused across runs; no separate build step).
 # Edit the variables below -- the single place to change any hyperparameter.
 # =====================================================================
-RUN_NAME=gsr_wtanchored_concat
+RUN_NAME=llr_projection_verify_tune_h3_bs32  # verifying the new LLR-projection
+                                              # metric/figure with the best
+                                              # non-LoRA tuning hparams
+                                              # (tune_h3_bs32, tune/results.jsonl)
 
 # --- data / wild-types ---
 FASTA_PATH=/scratch/jv2807/gene_structure_removal/data/human_uniref90.fasta
@@ -42,7 +45,7 @@ HEAD_ACTIVATION=gelu       # relu | gelu | silu | tanh
 HEAD_NORM=layernorm        # none | layernorm | batchnorm
 
 # --- loss ---
-LOSS_TYPE=wt_anchored_bce  # wt_anchored_bce | contrastive_ce | ntxent | triplet
+LOSS_TYPE=contrastive_ce   # wt_anchored_bce | contrastive_ce | ntxent | triplet
 DISTANCE_METRIC=cosine     # cosine | euclidean
 
 # --- LoRA (backbone finetuning; off by default) ---
@@ -54,13 +57,13 @@ LORA_DROPOUT=0.05
 
 # --- batching / diversity ---
 BATCH_MODE=gene_diverse    # gene_diverse | cross_gene
-BATCH_SIZE=64
+BATCH_SIZE=32
 GENES_PER_BATCH=2          # cross_gene only
 
 # --- optimization ---
 LR=1e-3
 WEIGHT_DECAY=0.0
-EPOCHS=20
+EPOCHS=5
 GRAD_CLIP=1.0
 
 # --- embedding read mode ---

@@ -19,7 +19,10 @@
 # same hyperparameter block, just looped over POOLING_MODES.
 # =====================================================================
 RUN_PREFIX=pooling_sweep
-POOLING_MODES="concat wt_mut_mean_concat wt_subtracted_mean"
+# concat already completed successfully (job 14422106); the other two failed
+# on a since-fixed WtMeanCache bug (h5py rejected the duplicate/broadcast row
+# indices used to read cached WT means) -- rerunning just those two.
+POOLING_MODES="wt_mut_mean_concat wt_subtracted_mean"
 
 # --- data / wild-types ---
 FASTA_PATH=/scratch/jv2807/gene_structure_removal/data/human_uniref90.fasta

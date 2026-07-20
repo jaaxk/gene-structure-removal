@@ -29,16 +29,38 @@ def main():
         sys.exit(1)
     args = json.loads(args_path.read_text())
     metrics = json.loads(metrics_path.read_text())
-    row = {
-        "run_name": run_name,
-        "hyp": hyp_tag,
-        "hparams": {k: args.get(k) for k in SWEPT_KEYS},
-        "macro_spearman_mean": metrics.get("centroid/spearman_mean"),
-        "per_type_diff": {
-            k.split("/")[-1]: v for k, v in metrics.items()
-            if k.startswith("centroid/spearman_diff/")
-        },
-    }
+    is_lora = "best_source" in metrics
+    if is_lora:
+        # LoRA runs report both head-projected and raw (post-LoRA) backbone
+        # metrics; best_source/best_spearman_mean pick the winner.
+        head_m = {k[len("head/"):]: v for k, v in metrics.items() if k.startswith("head/")}
+        backbone_m = {k[len("backbone/"):]: v for k, v in metrics.items() if k.startswith("backbone/")}
+        best_source = metrics["best_source"]
+        best_m = backbone_m if best_source == "backbone" else head_m
+        row = {
+            "run_name": run_name,
+            "hyp": hyp_tag,
+            "hparams": {k: args.get(k) for k in SWEPT_KEYS},
+            "best_source": best_source,
+            "macro_spearman_mean": metrics["best_spearman_mean"],
+            "head_macro_spearman_mean": head_m.get("centroid/spearman_mean"),
+            "backbone_macro_spearman_mean": backbone_m.get("centroid/spearman_mean"),
+            "per_type_diff": {
+                k.split("/")[-1]: v for k, v in best_m.items()
+                if k.startswith("centroid/spearman_diff/")
+            },
+        }
+    else:
+        row = {
+            "run_name": run_name,
+            "hyp": hyp_tag,
+            "hparams": {k: args.get(k) for k in SWEPT_KEYS},
+            "macro_spearman_mean": metrics.get("centroid/spearman_mean"),
+            "per_type_diff": {
+                k.split("/")[-1]: v for k, v in metrics.items()
+                if k.startswith("centroid/spearman_diff/")
+            },
+        }
     with open(RESULTS, "a") as fh:
         fh.write(json.dumps(row) + "\n")
     print(f"logged {run_name}: macro={row['macro_spearman_mean']:.4f}")

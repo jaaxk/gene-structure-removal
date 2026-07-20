@@ -276,6 +276,29 @@ class Trainer:
                        step=self.global_step)
         print(f"[eval:final_full] best-ckpt macro Spearman="
               f"{metrics.get(self.evaluator.primary_metric, float('nan')):.4f}")
+
+        # LoRA also finetunes the backbone itself, so the raw (post-LoRA,
+        # pre-head) embeddings are a second candidate representation --
+        # compute both and keep whichever scores higher.
+        if self.use_lora:
+            identity_metrics = self.evaluator.evaluate(
+                lambda emb: np.asarray(emb, dtype=np.float32), **self._eval_kwargs())
+            self.wandb.log(
+                {f"final_full_backbone/{k}": v for k, v in identity_metrics.items()},
+                step=self.global_step)
+            head_score = metrics.get(self.evaluator.primary_metric, float("nan"))
+            backbone_score = identity_metrics.get(
+                self.evaluator.primary_metric, float("nan"))
+            best_source = "backbone" if backbone_score > head_score else "head"
+            print(f"[eval:final_full] backbone-only macro Spearman="
+                  f"{backbone_score:.4f} (best_source={best_source})")
+            metrics = {
+                **{f"head/{k}": v for k, v in metrics.items()},
+                **{f"backbone/{k}": v for k, v in identity_metrics.items()},
+                "best_source": best_source,
+                "best_spearman_mean": max(head_score, backbone_score),
+            }
+
         import json
         with open(self.run_dir / "final_full_metrics.json", "w") as fh:
             json.dump(metrics, fh, indent=2)

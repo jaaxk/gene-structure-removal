@@ -63,6 +63,13 @@ def _emb_path(args) -> Path:
             f"_{args.pooling}_{_key(args)}.h5")
 
 
+def llr_projection_cache_exists(args) -> bool:
+    """Whether all 3 cached artifacts for this config already exist (so a CPU
+    run -- which cannot afford to compute LLR/embeddings from scratch -- is safe)."""
+    return (_meta_path(args).exists() and _llr_path(args).exists()
+            and _emb_path(args).exists())
+
+
 def _load_wt_reference() -> pd.DataFrame:
     """DMS_id -> (target_seq, seq_len) reference table (the WT sequence per assay)."""
     csv_path = paths.DMS_DATASETS_DIR / "DMS_substitutions.csv"

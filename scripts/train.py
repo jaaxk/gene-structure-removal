@@ -24,6 +24,7 @@ from gsr.data.training_data import (build_metadata, fill_embeddings,
                                      select_embeddings_mode)
 from gsr.data.uniref import load_wildtypes
 from gsr.eval.dms_cache import build_or_load_dms_cache, dms_cache_exists
+from gsr.eval.llr_projection import llr_projection_cache_exists
 from gsr.train.trainer import Trainer
 from gsr.utils.device import resolve_device
 from gsr.utils.seeding import seed_everything
@@ -94,6 +95,9 @@ def main():
         if (args.eval_per_epoch or args.eval_every_steps) and \
                 not dms_cache_exists(args):
             _cpu_guard("the DMS eval cache is not built")
+        if (args.eval_per_epoch or args.eval_every_steps) and \
+                not llr_projection_cache_exists(args):
+            _cpu_guard("the LLR-projection eval cache is not built")
 
     evaluator = build_evaluator(args, backbone=frozen)
 

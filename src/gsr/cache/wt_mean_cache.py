@@ -68,12 +68,18 @@ class WtMeanCache:
             return np.empty((0, 0), np.float32), list(range(len(wt_seqs)))
         out_idx = np.array([p[0] for p in present])
         rows = np.array([p[1] for p in present])
-        order = np.argsort(rows)
+        # wt_seqs is typically a BROADCAST list (the same WT sequence repeated
+        # once per variant of a gene), so `rows` routinely has duplicates --
+        # h5py's fancy indexing rejects repeated/non-strictly-increasing
+        # indices, so dedup before touching the file and broadcast back via
+        # plain numpy (unconstrained) afterward.
+        uniq_rows, inverse = np.unique(rows, return_inverse=True)
         try:
             with h5py.File(self.h5_path, "r") as h5:
                 D = h5["X"].shape[1]
                 X = np.full((len(wt_seqs), D), np.nan, np.float32)
-                X[out_idx[order]] = h5["X"][rows[order]]
+                uniq_vals = h5["X"][uniq_rows]
+                X[out_idx] = uniq_vals[inverse]
         except (OSError, KeyError):
             return np.empty((0, 0), np.float32), list(range(len(wt_seqs)))
         return X, missing

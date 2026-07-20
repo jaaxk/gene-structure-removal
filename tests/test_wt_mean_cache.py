@@ -32,6 +32,25 @@ def test_wt_mean_cache_dedups_identical_sequences(tmp_path, monkeypatch):
         assert h5["X"].shape[0] == 1
 
 
+def test_wt_mean_cache_get_with_broadcast_repeats(tmp_path, monkeypatch):
+    # Regression test: get() is normally called with a BROADCAST list (the
+    # same WT sequence repeated once per variant of a gene) -- h5py's fancy
+    # indexing rejects duplicate/non-increasing row selections, so this must
+    # dedup before touching the HDF5 file.
+    monkeypatch.setattr(paths, "SCRATCH_ROOT", tmp_path)
+    cache = WtMeanCache("m", -1)
+    seqs = ["AAAA", "BBBB", "CCCC"]
+    X = np.array([[1., 1.], [2., 2.], [3., 3.]], dtype=np.float32)
+    assert cache.put(seqs, X) is True
+
+    broadcast = ["BBBB", "BBBB", "AAAA", "CCCC", "BBBB", "AAAA"]
+    got, missing = cache.get(broadcast)
+    assert missing == []
+    expected = np.array([[2., 2.], [2., 2.], [1., 1.], [3., 3.], [2., 2.], [1., 1.]],
+                        dtype=np.float32)
+    np.testing.assert_allclose(got, expected)
+
+
 def test_wt_mean_cache_lock_skips_save(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "SCRATCH_ROOT", tmp_path)
     cache = WtMeanCache("m", -1)

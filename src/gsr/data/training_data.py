@@ -21,6 +21,8 @@ import pandas as pd
 import torch
 from tqdm import tqdm
 
+from gsr.backbone.pooling import WT_MEAN_POOLINGS
+from gsr.cache.wt_mean_cache import WtMeanCache, ensure_and_broadcast
 from gsr.data.labeling import assign_labels
 from gsr.data.uniref import WTRecord
 from gsr.losses.base import LABEL_TO_ID
@@ -73,7 +75,7 @@ def build_metadata(records: List[WTRecord], args, backbone, score_cache
 
 
 def _compute_misses(df, args, backbone, emb_cache, missing_positions,
-                    mut=None, wt=None):
+                    mut=None, wt=None, wt_mean_cache=None):
     """Compute embeddings for ``missing_positions`` (indices into df), append them
     to the cache incrementally (resumable), and optionally scatter into resident
     ``mut``/``wt`` arrays. Returns True if all flushes persisted."""
@@ -84,6 +86,16 @@ def _compute_misses(df, args, backbone, emb_cache, missing_positions,
     pos = df["pos"].astype(int).tolist()
     vids = df["variant_id"].tolist()
     pending_ids, pending_mut, pending_wt, all_saved = [], [], [], True
+
+    # Dedup WT means across ALL misses up front (not per bs-sized chunk) --
+    # this is what makes wt_mean a once-per-gene cost rather than
+    # once-per-variant, since the same WT sequence repeats across every
+    # variant of that gene.
+    wt_mean_by_seq = None
+    if wt_mean_cache is not None:
+        unique_wt = sorted({wseqs[i] for i in missing_positions})
+        wt_mean_unique = ensure_and_broadcast(wt_mean_cache, backbone, unique_wt, bs)
+        wt_mean_by_seq = dict(zip(unique_wt, wt_mean_unique))
 
     def _flush():
         nonlocal all_saved, pending_ids, pending_mut, pending_wt
@@ -96,10 +108,13 @@ def _compute_misses(df, args, backbone, emb_cache, missing_positions,
     for s in tqdm(range(0, len(missing_positions), bs), desc="embed misses"):
         idx = missing_positions[s:s + bs]
         p = [pos[i] for i in idx]
-        m = backbone.embed([mseqs[i] for i in idx], layer=args.embedding_layer,
-                           pooling=args.pooling, positions=p).float().cpu().numpy()
-        w = backbone.embed([wseqs[i] for i in idx], layer=args.embedding_layer,
-                           pooling=args.pooling, positions=p).float().cpu().numpy()
+        wm = (torch.stack([wt_mean_by_seq[wseqs[i]] for i in idx])
+              if wt_mean_by_seq is not None else None)
+        m, w = backbone.embed_pair(
+            [mseqs[i] for i in idx], [wseqs[i] for i in idx],
+            layer=args.embedding_layer, pooling=args.pooling, positions=p,
+            wt_mean=wm)
+        m, w = m.float().cpu().numpy(), w.float().cpu().numpy()
         for k, i in enumerate(idx):
             if mut is not None:
                 mut[i] = m[k]
@@ -128,6 +143,8 @@ def fill_embeddings(df: pd.DataFrame, args, backbone, emb_cache,
     """
     vids = df["variant_id"].tolist()
     D = backbone.output_dim(args.pooling)
+    wt_mean_cache = (WtMeanCache(args.esm_model, args.embedding_layer)
+                     if args.pooling in WT_MEAN_POOLINGS else None)
 
     if not resident:
         missing_ids = set(emb_cache.missing_ids(vids))
@@ -135,7 +152,8 @@ def fill_embeddings(df: pd.DataFrame, args, backbone, emb_cache,
         print(f"[emb] warm: {len(vids)-len(missing_pos)}/{len(vids)} cached, "
               f"{len(missing_pos)} to compute ({args.esm_model} {args.pooling})")
         if missing_pos and not _compute_misses(df, args, backbone, emb_cache,
-                                               missing_pos):
+                                               missing_pos,
+                                               wt_mean_cache=wt_mean_cache):
             print("[emb] WARNING: cache locked by another writer; some embeddings "
                   "were NOT persisted this run.")
         return None, None
@@ -156,7 +174,8 @@ def fill_embeddings(df: pd.DataFrame, args, backbone, emb_cache,
         mut[cached_pos] = cmut
         wt[cached_pos] = cwt
     if missing and not _compute_misses(df, args, backbone, emb_cache, missing,
-                                       mut=mut, wt=wt):
+                                       mut=mut, wt=wt,
+                                       wt_mean_cache=wt_mean_cache):
         print("[emb] WARNING: cache locked by another writer; some embeddings "
               "were NOT persisted this run (kept in memory).")
     return torch.from_numpy(mut), torch.from_numpy(wt)

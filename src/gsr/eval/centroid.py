@@ -116,6 +116,9 @@ class CentroidDMSEvaluator:
         """Re-embed the given meta rows through ``backbone`` (grad-free), for the
         LoRA path where DMS embeddings must reflect the finetuned backbone."""
         import torch
+
+        from gsr.backbone.pooling import WT_MEAN_POOLINGS, mean_pool
+
         seqs = self.meta["mutated_sequence"].to_numpy()
         pos = self.meta["pos"].to_numpy()
         bs = embed_args.get("batch_size", 16)
@@ -123,13 +126,23 @@ class CentroidDMSEvaluator:
         pooling = embed_args.get("pooling", "concat")
         was_training = backbone.model.training
         backbone.model.eval()
+        wt_mean_full = None
+        if pooling in WT_MEAN_POOLINGS:
+            wt_seqs_rows = self.meta["target_seq"].to_numpy()[rows]
+            uniq, inverse = np.unique(wt_seqs_rows, return_inverse=True)
+            with torch.no_grad():
+                uh, ua = backbone.forward_reps(list(uniq), layer=layer, grad=False)
+            wt_mean_full = mean_pool(uh, ua)[inverse].cpu().numpy()
         outs = []
         with torch.no_grad():
             for s in range(0, len(rows), bs):
                 idx = rows[s:s + bs]
+                wm = (torch.from_numpy(wt_mean_full[s:s + bs])
+                      if wt_mean_full is not None else None)
                 e = backbone.embed([seqs[i] for i in idx], layer=layer,
                                    pooling=pooling,
-                                   positions=[int(pos[i]) for i in idx], grad=False)
+                                   positions=[int(pos[i]) for i in idx], grad=False,
+                                   wt_mean=wm)
                 outs.append(e.float().cpu().numpy())
         if was_training:
             backbone.model.train()

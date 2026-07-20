@@ -23,3 +23,24 @@ def test_cross_gene_divisibility_enforced():
 def test_quartile_sum_bound():
     with pytest.raises(AssertionError):
         parse_args(BASE + ["--quartile_low", "0.6", "--quartile_high", "0.6"])
+
+
+def test_new_pooling_choices_parse():
+    a = parse_args(BASE + ["--pooling", "wt_mut_mean_concat"])
+    assert a.pooling == "wt_mut_mean_concat"
+    a = parse_args(BASE + ["--pooling", "wt_subtracted_mean"])
+    assert a.pooling == "wt_subtracted_mean"
+
+
+def test_wt_subtracted_mean_with_wt_anchored_bce_warns(capsys):
+    parse_args(BASE + ["--pooling", "wt_subtracted_mean",
+                       "--loss_type", "wt_anchored_bce"])
+    out = capsys.readouterr().out
+    assert "wt_subtracted_mean" in out and "wt_anchored_bce" in out
+
+
+def test_wt_subtracted_mean_with_other_loss_does_not_warn(capsys):
+    parse_args(BASE + ["--pooling", "wt_subtracted_mean",
+                       "--loss_type", "contrastive_ce"])
+    out = capsys.readouterr().out
+    assert "wt_anchored_bce" not in out

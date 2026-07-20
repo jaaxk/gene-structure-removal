@@ -15,7 +15,8 @@ import argparse
 AA_ALPHABET = "ACDEFGHIKLMNPQRSTVWY"
 
 SCORER_CHOICES = ("masked_marginal", "wt_marginal", "pll")
-POOLING_CHOICES = ("mean", "mutated_position", "concat")
+POOLING_CHOICES = ("mean", "mutated_position", "concat",
+                   "wt_mut_mean_concat", "wt_subtracted_mean")
 LOSS_CHOICES = ("wt_anchored_bce", "contrastive_ce", "ntxent", "triplet")
 DISTANCE_CHOICES = ("cosine", "euclidean")
 BATCH_MODE_CHOICES = ("gene_diverse", "cross_gene")
@@ -65,7 +66,10 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--pooling", type=str, default="concat", choices=POOLING_CHOICES,
                    help="How a variant sequence becomes one vector for the head. "
                    "For mutated_position/concat the WT is pooled at the SAME "
-                   "mutated residue as the variant.")
+                   "mutated residue as the variant. wt_mut_mean_concat: concat "
+                   "with the WT gene's mean-pooled embedding appended (3*D), so "
+                   "variant-to-variant losses also see WT context. "
+                   "wt_subtracted_mean: mut_mean - wt_mean (1*D).")
     g.add_argument("--max_seq_len", type=int, default=1024,
                    help="Length cap on wild-type sequences (PLL cost is O(L)).")
 
@@ -229,6 +233,13 @@ def validate_args(args: argparse.Namespace) -> None:
     if args.use_lora:
         assert args.lora_rank > 0 and args.lora_alpha > 0
     assert args.dms_per_gene_subsample > 0, "dms_per_gene_subsample must be > 0"
+    if args.pooling == "wt_subtracted_mean" and args.loss_type == "wt_anchored_bce":
+        print(
+            "[warn] pooling=wt_subtracted_mean makes wt_emb == 0 for every gene "
+            "(mut_mean - wt_mean self-cancels), so wt_anchored_bce's WT anchor "
+            "is a fixed vector independent of gene. Intended for variant-to-"
+            "variant losses (contrastive_ce/ntxent/triplet)."
+        )
 
 
 def parse_args(argv=None) -> argparse.Namespace:

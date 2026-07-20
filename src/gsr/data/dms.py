@@ -82,3 +82,14 @@ def gene_level_split(genes: List[str], query_frac: float, seed: int = 0):
     query = set(genes[:n_query])
     centroid = set(genes[n_query:])
     return centroid, query
+
+
+def load_wt_reference() -> pd.DataFrame:
+    """DMS_id -> (target_seq, seq_len) reference table: the WT sequence per
+    ProteinGym assay. Shared by anything needing a WT sequence for DMS
+    variants (the LLR-projection metric, and the WT-mean-aware pooling
+    modes' eval-side embedding), so it lives here rather than duplicated per
+    consumer."""
+    csv_path = paths.DMS_DATASETS_DIR / "DMS_substitutions.csv"
+    ref = pd.read_csv(csv_path, usecols=["DMS_id", "target_seq", "seq_len"])
+    return ref.rename(columns={"DMS_id": "dms_id"})

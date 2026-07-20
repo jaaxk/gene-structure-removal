@@ -28,6 +28,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from gsr import paths
+from gsr.backbone.pooling import WT_MEAN_POOLINGS, mean_pool
 from gsr.data.sampler import GeneBatchSampler
 from gsr.data.seq_dataset import collate_sequences
 from gsr.data.stream_dataset import StreamingVariantDataset, stream_worker_init
@@ -126,10 +127,19 @@ class Trainer:
         a = self.args
         if self.use_lora:
             pos = batch["positions"]
-            mut = self.backbone.embed(batch["mut_seqs"], layer=a.embedding_layer,
-                                      pooling=a.pooling, positions=pos)
-            wt = self.backbone.embed(batch["wt_seqs"], layer=a.embedding_layer,
-                                     pooling=a.pooling, positions=pos)
+            wt_seqs = batch["wt_seqs"]
+            wt_mean = None
+            if a.pooling in WT_MEAN_POOLINGS:
+                # Dedup within the batch: gene_diverse => 1 unique wt_seq (one
+                # WT forward pass, not batch_size); cross_gene => genes_per_batch
+                # unique. np.unique handles both without branching on batch_mode.
+                uniq, inverse = np.unique(wt_seqs, return_inverse=True)
+                uniq_hidden, uniq_attn = self.backbone.forward_reps(
+                    list(uniq), layer=a.embedding_layer, grad=None)
+                wt_mean = mean_pool(uniq_hidden, uniq_attn)[inverse]
+            mut, wt = self.backbone.embed_pair(
+                batch["mut_seqs"], wt_seqs, layer=a.embedding_layer,
+                pooling=a.pooling, positions=pos, wt_mean=wt_mean)
             assert mut.shape == wt.shape, (
                 f"mut/wt embedding shape mismatch: {tuple(mut.shape)} vs "
                 f"{tuple(wt.shape)}")
@@ -283,7 +293,11 @@ class Trainer:
         if llr_eval is not None:
             from gsr.eval.llr_figure import make_llr_projection_figure
             table = llr_eval.effect_table(project, **self._eval_kwargs())
-            rho = metrics.get("llr_projection/spearman", float("nan"))
+            # Signed value for the figure annotation -- matches the visible
+            # trend a reader sees in the scatter; the primary metric
+            # (llr_projection/spearman) is the unsigned magnitude used for
+            # checkpoint selection, see LLRProjectionEvaluator.evaluate.
+            rho = metrics.get("llr_projection/spearman_signed", float("nan"))
             fig_path = make_llr_projection_figure(
                 table, rho, self.run_dir / "llr_projection_figure.png")
             self.wandb.log_figure("final_full/llr_projection_figure", str(fig_path),

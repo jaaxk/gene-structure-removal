@@ -45,7 +45,7 @@ import torch
 from tqdm import tqdm
 
 from gsr import paths
-from gsr.data.dms import load_dms
+from gsr.data.dms import load_dms, load_wt_reference
 from gsr.data.mutagenesis import Variant
 from gsr.utils.spearman import spearman
 
@@ -83,13 +83,6 @@ def llr_projection_cache_exists(args) -> bool:
             and _wt_emb_path(args).exists())
 
 
-def _load_wt_reference() -> pd.DataFrame:
-    """DMS_id -> (target_seq, seq_len) reference table (the WT sequence per assay)."""
-    csv_path = paths.DMS_DATASETS_DIR / "DMS_substitutions.csv"
-    ref = pd.read_csv(csv_path, usecols=["DMS_id", "target_seq", "seq_len"])
-    return ref.rename(columns={"DMS_id": "dms_id"})
-
-
 def _build_meta(args) -> pd.DataFrame:
     m = load_dms(args.dms_selection_types, max_per_assay=args.dms_max_per_assay,
                  seed=args.seed)
@@ -110,7 +103,7 @@ def _build_meta(args) -> pd.DataFrame:
         m.loc[g.index[hi], "_hi"] = True
         m.loc[g.index[lo], "_lo"] = True
 
-    ref = _load_wt_reference()
+    ref = load_wt_reference()
     # how="left" + validate="many_to_one" preserves row count/order, so
     # _dms_cache_row set above stays correct through this merge.
     m = m.merge(ref, on="dms_id", how="left", validate="many_to_one")
@@ -211,7 +204,14 @@ def _embed_wt_deduped(args, meta: pd.DataFrame, backbone, layer, pooling,
                       batch_size) -> np.ndarray:
     """Embed each unique (dms_id, pos) WT-at-position exactly once (multiple
     substitutions at the same site share the same WT embedding under
-    position-matched pooling), then broadcast back to meta's row order."""
+    position-matched pooling), then broadcast back to meta's row order.
+
+    No ``wt_mean`` is passed to the embed() call below: this WT embedding is
+    the metric's own "WT relative to ITSELF" quantity used as the
+    cosine-distance's WT-side reference (a separate concept from the new
+    pooling modes' mut-side WT-context). Per pool_batch's self-referential
+    default, omitting wt_mean here is already exactly correct under both new
+    modes -- not an oversight."""
     uniq = meta[["dms_id", "pos", "target_seq"]].drop_duplicates(
         subset=["dms_id", "pos"]).reset_index(drop=True)
     key_to_row = {(d, p): i for i, (d, p) in enumerate(zip(uniq["dms_id"], uniq["pos"]))}
@@ -295,6 +295,8 @@ class LLRProjectionEvaluator:
         backbone -- no caching or dms_cache reuse here, since the whole point
         is that the backbone has moved on from whatever it was when any cache
         was built."""
+        from gsr.backbone.pooling import WT_MEAN_POOLINGS, mean_pool
+
         bs = embed_args.get("batch_size", self.args.score_batch_size)
         layer = embed_args.get("layer", self.args.embedding_layer)
         pooling = embed_args.get("pooling", self.args.pooling)
@@ -303,13 +305,30 @@ class LLRProjectionEvaluator:
         positions = self.meta["pos"].tolist()
         was_training = backbone.model.training
         backbone.model.eval()
+        wt_mean_full = None
+        if pooling in WT_MEAN_POOLINGS:
+            uniq_df = self.meta.drop_duplicates("dms_id")[["dms_id", "target_seq"]]
+            with torch.no_grad():
+                uh, ua = backbone.forward_reps(uniq_df["target_seq"].tolist(),
+                                               layer=layer, grad=False)
+            uniq_mean = mean_pool(uh, ua).cpu().numpy()
+            gene_to_mean = dict(zip(uniq_df["dms_id"], uniq_mean))
+            wt_mean_full = np.stack(
+                [gene_to_mean[g] for g in self.meta["dms_id"]])
         X_mut, X_wt = [], []
         with torch.no_grad():
             for s in range(0, len(self.meta), bs):
                 sl = slice(s, s + bs)
+                wm = (torch.from_numpy(wt_mean_full[sl])
+                      if wt_mean_full is not None else None)
                 X_mut.append(backbone.embed(mut_seqs[sl], layer=layer, pooling=pooling,
-                                            positions=positions[sl], grad=False)
+                                            positions=positions[sl], grad=False,
+                                            wt_mean=wm)
                              .float().cpu().numpy())
+                # No wt_mean here: this is the metric's own "WT relative to
+                # ITSELF" embedding (self-referential default), used as the
+                # cosine-distance's WT-side reference -- unaffected by the
+                # new pooling modes' mut-side WT-context concept.
                 X_wt.append(backbone.embed(wt_seqs[sl], layer=layer, pooling=pooling,
                                            positions=positions[sl], grad=False)
                             .float().cpu().numpy())
@@ -335,8 +354,18 @@ class LLRProjectionEvaluator:
                  backbone=None, embed_args=None) -> Dict[str, float]:
         table = self.effect_table(project_fn, backbone=backbone, embed_args=embed_args)
         rho = spearman(table["effect_score"].to_numpy(), table["llr"].to_numpy())
+        # Signed: cosine distance (effect_score) is expected to correlate
+        # NEGATIVELY with LLR (a larger mutational effect drives both a bigger
+        # embedding shift from WT and a more negative log-likelihood ratio),
+        # so a strongly-negative rho is the success direction, not a positive
+        # one. "Correlates well" (per the metric's purpose: showing effect
+        # scores sit on the same scale across genes) means large |rho|,
+        # either sign -- report the magnitude as the primary/checkpoint-
+        # selection metric (Trainer picks the highest value), keep the signed
+        # value too for diagnostics/wandb.
         return {
-            "llr_projection/spearman": rho,
+            "llr_projection/spearman": abs(rho),
+            "llr_projection/spearman_signed": rho,
             "llr_projection/n_variants": float(len(table)),
             "llr_projection/n_genes": float(table["uniprot_id"].nunique()),
         }

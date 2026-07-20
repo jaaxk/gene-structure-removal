@@ -4,6 +4,16 @@ The backbone is frozen, so DMS variant embeddings are computed once and cached t
 scratch; every eval (during training or standalone) then just applies the current
 projection head to these cached embeddings. Cache key encodes model/layer/pooling
 /max_per_assay so different configs never collide.
+
+For the two WT-mean-aware pooling modes (see gsr.backbone.pooling), the
+projection head's input_dim was fixed at training time to include WT context,
+so these DMS embeddings must be constructed the identical way: this module
+joins the DMS_substitutions.csv WT reference (gsr.data.dms.load_wt_reference,
+the same one gsr.eval.llr_projection uses) to get each row's WT sequence, and
+computes/caches a per-dms_id WT mean (gsr.cache.wt_mean_cache) exactly as the
+training pipeline does -- one shared implementation (pool_batch/embed), not
+duplicated logic. Old pooling modes are completely unaffected (no WT join, no
+wt_mean, byte-for-byte identical cache).
 """
 
 from __future__ import annotations
@@ -17,7 +27,9 @@ import torch
 from tqdm import tqdm
 
 from gsr import paths
-from gsr.data.dms import load_dms
+from gsr.backbone.pooling import WT_MEAN_POOLINGS
+from gsr.cache.wt_mean_cache import WtMeanCache, ensure_and_broadcast
+from gsr.data.dms import load_dms, load_wt_reference
 
 
 def _cache_key(args) -> str:
@@ -56,13 +68,29 @@ def build_or_load_dms_cache(args, backbone=None):
         backbone = ESMBackbone(args.esm_model, device=device)
 
     bs = getattr(args, "score_batch_size", 16)
+    wt_mean_tensor = None
+    if args.pooling in WT_MEAN_POOLINGS:
+        ref = load_wt_reference()
+        meta = meta.merge(ref[["dms_id", "target_seq"]], on="dms_id", how="left",
+                          validate="many_to_one")
+        n_missing = int(meta["target_seq"].isna().sum())
+        if n_missing:
+            print(f"[dms_cache] WARNING: {n_missing} variants have no target_seq "
+                  "match in DMS_substitutions.csv; dropping")
+            meta = meta.dropna(subset=["target_seq"]).reset_index(drop=True)
+        wt_mean_cache = WtMeanCache(args.esm_model, args.embedding_layer)
+        wt_mean_tensor = ensure_and_broadcast(wt_mean_cache, backbone,
+                                              meta["target_seq"].tolist(), bs)
+
     seqs = meta["mutated_sequence"].tolist()
     positions = meta["pos"].tolist()
     embs = []
     for start in tqdm(range(0, len(seqs), bs), desc="embed DMS"):
-        e = backbone.embed(seqs[start:start + bs], layer=args.embedding_layer,
-                           pooling=args.pooling,
-                           positions=positions[start:start + bs])
+        sl = slice(start, start + bs)
+        wm = wt_mean_tensor[sl] if wt_mean_tensor is not None else None
+        e = backbone.embed(seqs[sl], layer=args.embedding_layer,
+                           pooling=args.pooling, positions=positions[sl],
+                           wt_mean=wm)
         embs.append(e.float().cpu().numpy())
     emb = np.concatenate(embs, axis=0).astype(np.float32)
 

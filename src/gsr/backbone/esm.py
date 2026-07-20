@@ -15,11 +15,12 @@ the leading special token).
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import torch
 
 from gsr.args import AA_ALPHABET
+from gsr.backbone.pooling import WT_MEAN_POOLINGS, mean_pool
 from gsr.backbone.pooling import output_dim as pool_output_dim
 from gsr.backbone.pooling import pool_batch
 
@@ -143,6 +144,7 @@ class ESMBackbone:
         pooling: str = "mean",
         positions: Optional[List[Optional[int]]] = None,
         grad: bool = None,
+        wt_mean: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Return pooled embeddings (B, out_dim) for a batch of sequences.
 
@@ -150,9 +152,44 @@ class ESMBackbone:
         ``None`` uses the mean vector for the positional component. For a WT pooled
         relative to a mutant, pass the mutant's position so both are pooled at the
         same residue. ``grad=False`` forces no-grad (used for eval re-embedding).
+        ``wt_mean`` (B, hidden_dim) is only consulted by the two WT-mean-aware
+        pooling modes -- an externally supplied per-row WT mean (e.g. from
+        WtMeanCache, or another sequence's forward pass), used when this call
+        embeds ONLY the mutant side and the WT side was already pooled/cached
+        elsewhere. See ``embed_pair`` for the common case of embedding both
+        sides together.
         """
         hidden, attn = self.forward_reps(sequences, layer=layer, grad=grad)
-        return pool_batch(hidden, attn, positions, pooling)
+        return pool_batch(hidden, attn, positions, pooling, wt_mean=wt_mean)
+
+    def embed_pair(
+        self,
+        mut_sequences: List[str],
+        wt_sequences: List[str],
+        layer: int = -1,
+        pooling: str = "mean",
+        positions: Optional[List[Optional[int]]] = None,
+        grad: bool = None,
+        wt_mean: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Embed a (mutant, WT) pair -- the single shared entry point every
+        caller needing both sides should use, so WT-mean pooling logic lives
+        in exactly one place regardless of pooling mode.
+
+        For the two WT-mean-aware modes, ``wt_mean`` is derived for free from
+        the WT sequence's own forward pass (``mean_pool`` is already computed
+        inside ``pool_batch``) unless explicitly supplied (e.g. a caller with
+        its own dedup/cache) -- no extra forward pass versus two independent
+        ``embed()`` calls. For the three original modes this is exactly
+        today's "two independent embed() calls" behavior, byte-for-byte.
+        """
+        wt_hidden, wt_attn = self.forward_reps(wt_sequences, layer=layer, grad=grad)
+        wt_emb = pool_batch(wt_hidden, wt_attn, positions, pooling)  # self-referential
+        if wt_mean is None and pooling in WT_MEAN_POOLINGS:
+            wt_mean = mean_pool(wt_hidden, wt_attn)
+        mut_hidden, mut_attn = self.forward_reps(mut_sequences, layer=layer, grad=grad)
+        mut_emb = pool_batch(mut_hidden, mut_attn, positions, pooling, wt_mean=wt_mean)
+        return mut_emb, wt_emb
 
     def output_dim(self, pooling: str) -> int:
         return pool_output_dim(self.hidden_dim, pooling)

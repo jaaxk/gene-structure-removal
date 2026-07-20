@@ -29,7 +29,8 @@ FIXED_ARGS=(
 ssh -o BatchMode=yes "$NODE" "singularity exec --nv \
   --overlay /scratch/jv2807/dms_singularity/dms_contrastive.ext3:ro \
   /share/apps/images/cuda12.1.1-cudnn8.9.0-devel-ubuntu22.04.2.sif /bin/bash -c \
-  'source /ext3/env.sh && export HDF5_USE_FILE_LOCKING=FALSE PYTHONUNBUFFERED=1 && \
+  'source /ext3/env.sh && export HDF5_USE_FILE_LOCKING=FALSE PYTHONUNBUFFERED=1 \
+   OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 && \
    cd /home/jv2807/gene_structure && PYTHONPATH=src python scripts/train.py ${FIXED_ARGS[*]} $* '" \
   > "$LOGDIR/$RUN_NAME.log" 2>&1 &
 

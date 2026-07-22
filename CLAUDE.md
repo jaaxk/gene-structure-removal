@@ -22,3 +22,4 @@ Brief, evolving rules for this repo. Keep it short.
 - Storage format: per-variant scalars → Parquet; embeddings → HDF5 shards + manifest.
 - Losses live in their own module (`src/gsr/losses/`), swappable via `--loss_type`.
 - Reproducibility: seed everything; resolved args saved per run.
+- Whenever a significant change is made that affects default behavior, update the README.

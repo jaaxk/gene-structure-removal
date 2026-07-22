@@ -33,8 +33,16 @@ ESM's (pseudo-)log-likelihood. Variants whose likelihood is **close** to the WT
 are pulled together; variants whose likelihood is **far** are pushed apart. No
 external labels are used for training.
 
-Success is measured by **selection-type-specific zero-shot DMS prediction**
-(Spearman) improving on the projected embeddings vs. the raw ESM backbone.
+Success is measured **zero-shot**: for every DMS variant (pooled across all
+ProteinGym genes), correlate its **distance from WT** in the projected
+embedding space against ESM's own LLR (`delta = LL_mut - LL_wt`) via Spearman
+(`llr_projection`, the default `--primary_metric`). If the projection has
+really removed gene identity, effect magnitude sits on the same scale across
+genes, so it correlates with LLR even pooled together — a signal the raw
+backbone's gene-dominated embedding space can't produce. **Selection-type-specific
+centroid DMS Spearman** (`centroid`) remains as a secondary, downstream-facing
+eval (closer to the eventual pathogenicity-prediction use case) but no longer
+drives checkpoint selection.
 
 ## How it works
 
@@ -47,7 +55,7 @@ WT protein ──► sample single-aa variants ──► frozen ESM LL/PLL score
                                                      │
 frozen ESM embedding ──► projection head (3-layer MLP) ──► contrastive loss
                                                      │
-             during/after training: zero-shot DMS centroid eval (Spearman)
+     during/after training: zero-shot distance-from-WT vs. LLR eval (Spearman)
 ```
 
 - **Backbone:** ESM-C 600M (frozen by default; optional LoRA finetuning).
@@ -80,7 +88,8 @@ src/gsr/            installable package
   scoring/          LL/PLL scorers + parquet+h5 store (utility)
   models/           projection head (configurable MLP)
   losses/           wt_anchored_bce (default), contrastive_ce, ntxent, triplet
-  eval/             centroid Spearman, dim-reduction, regression, dms cache
+  eval/             llr_projection (primary), centroid Spearman (secondary),
+                    dim-reduction, regression, dms cache
   train/            training loop
   utils/            stats, hashing, seeding, spearman, wandb
 scripts/            thin entrypoints: train, eval_embeddings
@@ -163,7 +172,8 @@ in the `run/*.sbatch` scripts. The knobs most likely to matter:
 | `--device` | `auto` / `cuda` / `cpu` (auto-detects the node) | `auto` |
 | `--embeddings_mode` | `auto` / `ram` / `stream` embedding reads | `auto` |
 | `--use_lora` | LoRA-finetune the backbone | off |
-| `--eval_every_steps` | during-training centroid eval cadence | 500 |
+| `--primary_metric` | metric driving best-checkpoint selection | `llr_projection/spearman` |
+| `--eval_every_steps` | during-training eval cadence | 500 |
 | `--centroid_subsample` | held-out variants/type for centroids at eval time | 2000 |
 
 ## Status

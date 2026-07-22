@@ -17,6 +17,15 @@ differences, and single-residue changes are tiny by comparison.
 **Hypothesis:** the information needed to separate molecular effects already
 exists inside ESM; we just need to remove the gene structure to access it.
 
+| Raw ESM-C embeddings | Projected embeddings |
+|:---:|:---:|
+| ![Raw ESM-C embeddings cluster by gene](figs/esm_c_raw_embeddings.png) | ![Projected embeddings show reduced gene structure](figs/projected_embeddings.png) |
+
+*t-SNE of raw ESM-C embeddings (left) shows variants clustering tightly by
+gene, dominating any molecular-effect signal. After projection (right), that
+per-gene structure is largely removed, leaving room for the smaller
+molecular-effect signal to be separated.*
+
 **Approach:** train a projection head on top of a frozen ESM using a
 *self-supervised* contrastive objective whose labels come from the frozen model
 itself. For each wild-type (WT) protein we score its single-aa variants with
